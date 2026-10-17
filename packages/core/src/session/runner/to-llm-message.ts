@@ -327,21 +327,8 @@ function toLLMMessage(message: SessionMessage.Info, model: Model.Ref, providerMe
 }
 
 /** Translate projected Session history into canonical @opencode/ai context. */
-const TIMING = process.env.OPENCODE_SESSION_HISTORY_TIMING === "1"
-
 export const toLLMMessages = (
   messages: readonly SessionMessage.Info[],
   model: Model.Ref,
   providerMetadataKey: string = model.providerID,
-) => {
-  const t0 = TIMING ? performance.now() : 0
-  const result = messages.flatMap((message) => toLLMMessage(message, model, providerMetadataKey))
-  const t1 = TIMING ? performance.now() : 0
-  if (TIMING) {
-    console.error(
-      "[session-history-timing]",
-      JSON.stringify({ phase: "toLLMMessages", messages: messages.length, out: result.length, totalMs: t1 - t0 }),
-    )
-  }
-  return result
-}
+) => messages.flatMap((message) => toLLMMessage(message, model, providerMetadataKey))

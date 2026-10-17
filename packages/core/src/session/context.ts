@@ -71,8 +71,6 @@ export interface Interface {
 /** Location-scoped model-context loader for durable Session Steps. */
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionContext") {}
 
-const TIMING = process.env.OPENCODE_SESSION_HISTORY_TIMING === "1"
-
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -163,17 +161,14 @@ const layer = Layer.effect(
     })
 
     const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
-      const t0 = TIMING ? performance.now() : 0
       const model = yield* resolveModel(selection.session)
-      const tModel = TIMING ? performance.now() : 0
       const history = yield* SessionHistory.entriesForRunner(
         db,
         selection.session.id,
         selection.instructions,
         SessionProviderContext.provenance(model) ?? "local",
       )
-      const tHistory = TIMING ? performance.now() : 0
-      const result = {
+      return {
         session: selection.session,
         agent: selection.agent,
         model,
@@ -181,20 +176,6 @@ const layer = Layer.effect(
         messages: history.entries.map((entry) => entry.message),
         tools: selection.tools,
       }
-      if (TIMING) {
-        console.error(
-          "[session-history-timing]",
-          JSON.stringify({
-            phase: "context.load",
-            sessionID: selection.session.id,
-            totalMs: tHistory - t0,
-            modelMs: tModel - t0,
-            historyMs: tHistory - tModel,
-            messages: result.messages.length,
-          }),
-        )
-      }
-      return result
     })
 
     return Service.of({ select, load, resolveModel, selectTitle, request })

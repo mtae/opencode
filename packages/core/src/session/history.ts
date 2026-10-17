@@ -12,7 +12,6 @@ import { SessionMessageTable } from "./sql.js"
 
 type DatabaseService = Database.Interface["db"]
 
-const TIMING = process.env.OPENCODE_SESSION_HISTORY_TIMING === "1"
 const CACHE_ENABLED = process.env.OPENCODE_SESSION_HISTORY_CACHE !== "0"
 
 const decode = Schema.decodeUnknownEffect(SessionMessage.Info)
@@ -112,7 +111,6 @@ const messageEntries = Effect.fnUntraced(function* (
   sessionID: SessionSchema.ID,
   boundary: Boundary,
 ) {
-  const t0 = TIMING ? performance.now() : 0
   const compaction = yield* latestCompaction(db, sessionID, boundary)
   const compactionSeq = compaction?.seq ?? null
 
@@ -144,26 +142,8 @@ const messageEntries = Effect.fnUntraced(function* (
 
   // Exact reuse: identical revision.
   if (cached && cached.revisionKey === revisionKey) {
-    const t1 = TIMING ? performance.now() : 0
-    if (TIMING) {
-      console.error(
-        "[session-history-timing]",
-        JSON.stringify({
-          phase: "history.messageEntries",
-          sessionID,
-          boundary,
-          cache: "hit",
-          totalMs: t1 - t0,
-          rows: count,
-          messages: cached.entries.length,
-          compactionSeq,
-        }),
-      )
-    }
     return cached.entries.slice() as Array<{ seq: number; message: SessionMessage.Info }>
   }
-
-  const tComp = TIMING ? performance.now() : 0
 
   // Suffix (append-only) fast path.
   let usedSuffix = false
@@ -212,8 +192,6 @@ const messageEntries = Effect.fnUntraced(function* (
     }
   }
 
-  const tSql = TIMING ? performance.now() : 0
-
   // Full read + decode (fallback).
   let rawEntries: Array<{ seq: number; message: SessionMessage.Info }>
   if (usedSuffix && decodedSuffix) {
@@ -236,8 +214,6 @@ const messageEntries = Effect.fnUntraced(function* (
     )
   }
 
-  const tDecode = TIMING ? performance.now() : 0
-
   // Re-expansion may cross a native checkpoint whose completion already advanced the instruction
   // epoch: the baseline supersedes the chronological updates before it. Forks seed their baseline
   // at sequence 0 but retain parent sequences, so the copied checkpoint still retires them.
@@ -255,26 +231,6 @@ const messageEntries = Effect.fnUntraced(function* (
     })
   }
 
-  const tFilter = TIMING ? performance.now() : 0
-  if (TIMING) {
-    console.error(
-      "[session-history-timing]",
-      JSON.stringify({
-        phase: "history.messageEntries",
-        sessionID,
-        boundary,
-        cache: usedSuffix ? "suffix" : cached ? "rebuild" : "cold",
-        compactionMs: tComp - t0,
-        sqlMs: tSql - tComp,
-        decodeMs: tDecode - tSql,
-        filterMs: tFilter - tDecode,
-        totalMs: tFilter - t0,
-        rows: count,
-        messages: filtered.length,
-        compactionSeq,
-      }),
-    )
-  }
   return filtered.slice() as Array<{ seq: number; message: SessionMessage.Info }>
 })
 
@@ -283,15 +239,7 @@ export const load = Effect.fn("SessionHistory.load")(function* (
   sessionID: SessionSchema.ID,
   boundary: Boundary,
 ) {
-  const t0 = TIMING ? performance.now() : 0
   const result = (yield* messageEntries(db, sessionID, boundary)).map((entry) => entry.message)
-  const t1 = TIMING ? performance.now() : 0
-  if (TIMING) {
-    console.error(
-      "[session-history-timing]",
-      JSON.stringify({ phase: "history.load", sessionID, boundary, totalMs: t1 - t0, messages: result.length }),
-    )
-  }
   return result
 })
 
@@ -301,7 +249,6 @@ export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(fun
   instructions: Instructions.List,
   boundary: Boundary,
 ) {
-  const t0 = TIMING ? performance.now() : 0
   const result = yield* db
     .transaction(() =>
       Effect.gen(function* () {
@@ -313,20 +260,6 @@ export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(fun
       }),
     )
     .pipe(Effect.orDie)
-  const t1 = TIMING ? performance.now() : 0
-  if (TIMING) {
-    console.error(
-      "[session-history-timing]",
-      JSON.stringify({
-        phase: "history.entriesForRunner",
-        sessionID,
-        boundary,
-        totalMs: t1 - t0,
-        messages: result.entries.length,
-        initialChars: result.initial.length,
-      }),
-    )
-  }
   return result
 })
 

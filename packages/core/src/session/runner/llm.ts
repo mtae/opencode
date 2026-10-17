@@ -1,7 +1,5 @@
 export * as SessionRunnerLLM from "./llm.js"
 
-const TIMING = process.env.OPENCODE_SESSION_HISTORY_TIMING === "1"
-
 import { Message } from "@opencode/ai"
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { Cause, Effect, Exit, FiberMap, Layer } from "effect"
@@ -201,24 +199,9 @@ const layer = Layer.effect(
     })
 
     const prepareContext = Effect.fn("SessionRunner.prepareContext")(function* (sessionID: SessionSchema.ID) {
-      const t0 = TIMING ? performance.now() : 0
       const selected = yield* context.select(sessionID)
-      const tSelect = TIMING ? performance.now() : 0
       // A blocked initial instruction baseline must leave admitted input pending.
       yield* InstructionState.prepare(db, bus, selected.instructions, sessionID)
-      const tInstr = TIMING ? performance.now() : 0
-      if (TIMING) {
-        console.error(
-          "[session-history-timing]",
-          JSON.stringify({
-            phase: "runner.prepareContext",
-            sessionID,
-            totalMs: tInstr - t0,
-            selectMs: tSelect - t0,
-            instructionMs: tInstr - tSelect,
-          }),
-        )
-      }
       return selected
     })
 
@@ -232,21 +215,7 @@ const layer = Layer.effect(
       let recoverContinuation = true
       while (true) {
         // Reuse boundary preparation once; retries refresh context without delivering more input.
-        const isRetry = initial === undefined
-        const tReload0 = TIMING && isRetry ? performance.now() : 0
         const loaded = initial ?? (yield* prepareContext(sessionID).pipe(Effect.flatMap(context.load)))
-        if (TIMING && isRetry) {
-          console.error(
-            "[session-history-timing]",
-            JSON.stringify({
-              phase: "runner.runStep.reload",
-              sessionID,
-              retry: true,
-              reloadMs: performance.now() - tReload0,
-              messages: loaded.messages.length,
-            }),
-          )
-        }
         initial = undefined
         const compacted = yield* compaction.compact({ reason: "auto", context: loaded })
         if (compacted.status === "failed") return yield* new StepFailedError({ error: compacted.error })
@@ -393,14 +362,10 @@ const layer = Layer.effect(
     const settleStaleToolCalls = Effect.fn("SessionRunner.settleStaleToolCalls")(function* (
       sessionID: SessionSchema.ID,
     ) {
-      const t0 = TIMING ? performance.now() : 0
-      const messages = yield* store.context(sessionID)
-      let staleToolCalls = 0
-      for (const message of messages) {
+      for (const message of yield* store.context(sessionID)) {
         if (message.type !== "assistant") continue
         for (const tool of message.content) {
           if (tool.type !== "tool" || (tool.state.status !== "streaming" && tool.state.status !== "running")) continue
-          staleToolCalls++
           const metadata = tool.state.status === "running" ? tool.state.metadata : undefined
           const childID =
             tool.name === "subagent" && typeof metadata?.sessionID === "string" ? metadata.sessionID : undefined
@@ -416,19 +381,6 @@ const layer = Layer.effect(
             executed: tool.executed === true,
           })
         }
-      }
-      const t1 = TIMING ? performance.now() : 0
-      if (TIMING) {
-        console.error(
-          "[session-history-timing]",
-          JSON.stringify({
-            phase: "runner.settleStaleToolCalls",
-            sessionID,
-            totalMs: t1 - t0,
-            messages: messages.length,
-            staleToolCalls,
-          }),
-        )
       }
     })
 
