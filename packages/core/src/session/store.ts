@@ -1,5 +1,7 @@
 export * as SessionStore from "./store.js"
 
+const TIMING = process.env.OPENCODE_SESSION_HISTORY_TIMING === "1"
+
 import { and, asc, desc, eq, gt, isNotNull, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Project } from "@opencode/schema/project"
@@ -176,7 +178,18 @@ const layer = Layer.effect(
           SessionHistory.decodeMessageRow,
         )
       }),
-      context: Effect.fn("SessionStore.context")((sessionID) => SessionHistory.load(db, sessionID, "latest")),
+      context: Effect.fn("SessionStore.context")(function* (sessionID) {
+        const t0 = TIMING ? performance.now() : 0
+        const result = yield* SessionHistory.load(db, sessionID, "latest")
+        const t1 = TIMING ? performance.now() : 0
+        if (TIMING) {
+          console.error(
+            "[session-history-timing]",
+            JSON.stringify({ phase: "store.context", sessionID, totalMs: t1 - t0, messages: result.length }),
+          )
+        }
+        return result
+      }),
       message: Effect.fn("SessionStore.message")(function* (messageID) {
         const row = yield* db
           .select()
