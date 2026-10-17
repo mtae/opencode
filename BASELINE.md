@@ -72,10 +72,27 @@ Interleaved re-runs are recommended before drawing conclusions; see A7.)
 - N=15 runs but not interleaved across scales in this pass; A7 recommends interleaving to decorrelate drift.
 - No end-to-end `opencode run` measurement here; model latency dominates that path (~900 ms per handoff §2).
 
+## After (versioned/suffix cache implemented)
+
+Same protocol, with cache enabled (default). `--grow 1` appends one message per measured run to simulate a growing
+session (the realistic per-step case). Reload = `entriesForRunner`.
+
+| messages | before reload median (ms) | after reload median (ms) | speedup | after MAD | after p95 |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 13.82 | 1.72 | ~8x | 0.16 | 7.40 |
+| 5,000 | 60.01 | 5.47 | ~11x | 1.12 | 9.05 |
+| 20,000 | 167.17 | 23.49 | ~7x | 0.91 | 24.78 |
+
+Cache-hit (identical revision, e.g. retries/repeated calls) is ~0.8-1.8 ms regardless of size.
+
+`toLLMMessages` remains O(n) and is NOT cached by this change (13.8 ms @1k, 24.8 ms @5k, 139 ms @20k before;
+similar after). It is a candidate follow-up: memoize the conversion by (revision, model) in the request path.
+
 ## Reproduce
 
 ```
 cd packages/core
 OPENCODE_SESSION_HISTORY_TIMING=1 bun run script/benchmark-session-history.ts --messages 5000 --runs 15 --warmup 3
 ```
-Add `--compaction 1` for checkpoint variant, `--text-size 1024` for larger outputs, `--boundary latest`.
+Add `--compaction 1` for checkpoint variant, `--text-size 1024` for larger outputs, `--boundary latest`,
+`--grow 1` to simulate per-step appends. Disable cache with `OPENCODE_SESSION_HISTORY_CACHE=0`.
