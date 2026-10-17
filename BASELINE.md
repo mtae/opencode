@@ -5,8 +5,7 @@ in-memory SQLite (`:memory:` via test preload pattern). Synthetic sessions gener
 `packages/core/script/benchmark-session-history.ts` (user messages with 256-char text unless noted; one instruction
 state prepared; `boundary=local`). Protocol: 3 warmup + 15 measured runs per point, median + MAD reported.
 
-Instrumentation: `OPENCODE_SESSION_HISTORY_TIMING=1` (added in this branch, removable) emits per-phase ms to stderr.
-The benchmark script also times `entriesForRunner` and `toLLMMessages` wall-clock per run.
+The benchmark script times `entriesForRunner` and `toLLMMessages` wall-clock per run.
 
 ## Raw results (no compaction, text size 256)
 
@@ -34,8 +33,8 @@ Decode is the largest single phase; SQL read is second. Filter and compaction-lo
 | no compaction | 60.01 | 4.60 | 32.14 |
 | one checkpoint at mid | 25.20 | 3.76 | 14.83 |
 
-A checkpoint roughly halves the read (suffix load), as expected from `latestCompaction` truncation
-(`packages/core/src/session/history.ts:83-92`).
+A checkpoint roughly halves the read, as expected from `latestCompaction` truncation
+(`packages/core/src/session/history.ts:182-184`).
 
 ## Larger tool-output-ish text (1,000 messages, 1024-char text)
 
@@ -72,21 +71,31 @@ Interleaved re-runs are recommended before drawing conclusions; see A7.)
 - N=15 runs but not interleaved across scales in this pass; A7 recommends interleaving to decorrelate drift.
 - No end-to-end `opencode run` measurement here; model latency dominates that path (~900 ms per handoff §2).
 
-## After (versioned/suffix cache implemented)
+## After (versioned context cache implemented)
 
-Same protocol, with cache enabled (default). `--grow 1` appends one message per measured run to simulate a growing
-session (the realistic per-step case). Reload = `entriesForRunner`.
+The cache keys each `(sessionID, boundary)` slot on `durableSeq` (`Bus.latestSequence`, an O(1) primary-key lookup
+that advances on every message-write-causing durable event — `packages/core/src/session/history.ts:136-137`,
+`packages/core/src/bus.ts:21-32`). A cache hit performs exactly one O(1) revision read and returns the cached,
+post-filter entries; a miss does a full read+decode. The unsound suffix fast path was removed, so correctness rests
+on `durableSeq` invalidation rather than an append-only assumption. The cache is opt-in
+(`OPENCODE_SESSION_HISTORY_CACHE`, on unless `=0`).
+
+Same protocol as "Raw results" (3 warmup + 15 measured runs, median + MAD). Reload = `entriesForRunner`.
 
 | messages | before reload median (ms) | after reload median (ms) | speedup | after MAD | after p95 |
 |---:|---:|---:|---:|---:|---:|
-| 1,000 | 13.82 | 1.72 | ~8x | 0.16 | 7.40 |
-| 5,000 | 60.01 | 5.47 | ~11x | 1.12 | 9.05 |
-| 20,000 | 167.17 | 23.49 | ~7x | 0.91 | 24.78 |
+| 100 | 3.34 | 0.63 | ~5x | 0.05 | 1.19 |
+| 1,000 | 13.82 | 0.58 | ~24x | 0.12 | 1.20 |
+| 5,000 | 60.01 | 0.60 | ~100x | 0.10 | 1.49 |
+| 20,000 | 167.17 | 0.65 | ~257x | 0.08 | 4.52 |
 
-Cache-hit (identical revision, e.g. retries/repeated calls) is ~0.8-1.8 ms regardless of size.
+Cache-hit (identical revision, e.g. retries/repeated calls) is flat at ~0.6 ms regardless of history size — the
+O(N) aggregate scan was removed along with the suffix path. `toLLMMessages` remains O(n) and is NOT cached
+(5.97 ms @1k, 23.57 ms @5k, 90.02 ms @20k). It is a candidate follow-up: memoize the conversion by
+(revision, model) in the request path.
 
-`toLLMMessages` remains O(n) and is NOT cached by this change (13.8 ms @1k, 24.8 ms @5k, 139 ms @20k before;
-similar after). It is a candidate follow-up: memoize the conversion by (revision, model) in the request path.
+Disable cache: `OPENCODE_SESSION_HISTORY_CACHE=0`. Cache-hit path exercises `Bus.latestSequence` + entry slice only;
+no `latestCompaction` or aggregate scan on a hit.
 
 ## Reproduce
 

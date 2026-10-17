@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, lte, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gte, or, sql } from "drizzle-orm"
 import { Effect, Schema } from "effect"
 import { Database } from "../database/database.js"
 import { Bus } from "../bus.js"
@@ -79,13 +79,13 @@ export const decodeMessageRow = (row: typeof SessionMessageTable.$inferSelect) =
   )
 
 interface CachedMessageEntries {
-  readonly revisionKey: string
-  readonly compactionSeq: number | null
-  readonly maxSeq: number
-  readonly count: number
-  readonly maxUpdated: number
+  readonly revision: number // durableSeq at snapshot time
   readonly entries: ReadonlyArray<{ readonly seq: number; readonly message: SessionMessage.Info }>
 }
+
+// Bounded per-db cache: an unbounded WeakMap<Map> of fully-decoded transcripts would pin
+// every session ever read for the life of the process. Cap entries per db and evict FIFO.
+const CACHE_MAX_ENTRIES = 64
 
 let messageEntryCaches = new WeakMap<object, Map<string, CachedMessageEntries>>()
 
@@ -96,6 +96,14 @@ const messageEntryCacheFor = (db: DatabaseService) => {
     messageEntryCaches.set(db as object, inner)
   }
   return inner
+}
+
+const cacheSet = (inner: Map<string, CachedMessageEntries>, key: string, value: CachedMessageEntries) => {
+  if (inner.size >= CACHE_MAX_ENTRIES) {
+    const first = inner.keys().next().value
+    if (first !== undefined) inner.delete(first)
+  }
+  inner.set(key, value)
 }
 
 const applyVisibilityFilter = (entries: ReadonlyArray<{ readonly seq: number; readonly message: SessionMessage.Info }>, boundary: Boundary) => {
@@ -111,15 +119,30 @@ const messageEntries = Effect.fnUntraced(function* (
   sessionID: SessionSchema.ID,
   boundary: Boundary,
 ) {
-  const compaction = yield* latestCompaction(db, sessionID, boundary)
-  const compactionSeq = compaction?.seq ?? null
+  // The durable event counter advances on every message-write-causing durable event
+  // (bus.ts:commitDurableEvent runs the projector + EventSequenceTable bump in one txn),
+  // so it is a complete, O(1) revision fingerprint of session_message for this session.
+  // Read it first so a cache hit skips the latestCompaction query entirely.
+  const durableSeq = yield* Bus.latestSequence(db, sessionID)
 
-  const aggRow = yield* db
-    .select({
-      maxSeq: sql<number>`COALESCE(MAX(${SessionMessageTable.seq}), -1)`,
-      count: sql<number>`COUNT(*)`,
-      maxUpdated: sql<number>`COALESCE(MAX(${SessionMessageTable.time_updated}), 0)`,
-    })
+  const inner = messageEntryCacheFor(db)
+  // Provenance boundaries are plain objects; serialize them so distinct models/providers
+  // never share (and never collide on) one cache slot.
+  const boundaryKey = typeof boundary === "string" ? boundary : JSON.stringify(boundary)
+  const cacheKey = `${sessionID}::${boundaryKey}`
+  const cached = CACHE_ENABLED ? inner.get(cacheKey) : undefined
+
+  // Exact reuse: identical durable revision ⇒ no message-row write since snapshot ⇒
+  // identical post-filter entries. durableSeq is the only component needed because every
+  // compaction (which moves the window lower bound) is itself a durable event.
+  if (cached && cached.revision === durableSeq) {
+    return cached.entries.slice() as Array<{ seq: number; message: SessionMessage.Info }>
+  }
+
+  // Cache miss: compute the compaction window and do a full read + decode.
+  const compaction = yield* latestCompaction(db, sessionID, boundary)
+  const rows = yield* db
+    .select()
     .from(SessionMessageTable)
     .where(
       and(
@@ -127,92 +150,12 @@ const messageEntries = Effect.fnUntraced(function* (
         compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
       ),
     )
-    .get()
+    .orderBy(asc(SessionMessageTable.seq))
+    .all()
     .pipe(Effect.orDie)
-  const maxSeq = Number(aggRow?.maxSeq ?? -1)
-  const count = Number(aggRow?.count ?? 0)
-  const maxUpdated = Number(aggRow?.maxUpdated ?? 0)
-
-  const durableSeq = yield* Bus.latestSequence(db, sessionID)
-  const revisionKey = `${compactionSeq}|${maxSeq}|${count}|${maxUpdated}|${durableSeq}`
-
-  const inner = messageEntryCacheFor(db)
-  const cacheKey = `${sessionID}::${boundary}`
-  const cached = CACHE_ENABLED ? inner.get(cacheKey) : undefined
-
-  // Exact reuse: identical revision.
-  if (cached && cached.revisionKey === revisionKey) {
-    return cached.entries.slice() as Array<{ seq: number; message: SessionMessage.Info }>
-  }
-
-  // Suffix (append-only) fast path.
-  let usedSuffix = false
-  let decodedSuffix: Array<{ seq: number; message: SessionMessage.Info }> | null = null
-  if (
-    cached &&
-    cached.compactionSeq === compactionSeq &&
-    cached.maxSeq >= 0 &&
-    maxSeq > cached.maxSeq &&
-    count > cached.count
-  ) {
-    const oldAgg = yield* db
-      .select({
-        maxUpdated: sql<number>`COALESCE(MAX(${SessionMessageTable.time_updated}), 0)`,
-      })
-      .from(SessionMessageTable)
-      .where(
-        and(
-          eq(SessionMessageTable.session_id, sessionID),
-          compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
-          lte(SessionMessageTable.seq, cached.maxSeq),
-        ),
-      )
-      .get()
-      .pipe(Effect.orDie)
-    const oldMaxUpdated = Number(oldAgg?.maxUpdated ?? 0)
-    if (oldMaxUpdated === cached.maxUpdated) {
-      const rows = yield* db
-        .select()
-        .from(SessionMessageTable)
-        .where(
-          and(
-            eq(SessionMessageTable.session_id, sessionID),
-            compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
-            gt(SessionMessageTable.seq, cached.maxSeq),
-          ),
-        )
-        .orderBy(asc(SessionMessageTable.seq))
-        .all()
-        .pipe(Effect.orDie)
-      const decoded = yield* Effect.forEach(rows, (row) =>
-        decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
-      )
-      decodedSuffix = cached.entries.concat(decoded)
-      usedSuffix = true
-    }
-  }
-
-  // Full read + decode (fallback).
-  let rawEntries: Array<{ seq: number; message: SessionMessage.Info }>
-  if (usedSuffix && decodedSuffix) {
-    rawEntries = decodedSuffix
-  } else {
-    const rows = yield* db
-      .select()
-      .from(SessionMessageTable)
-      .where(
-        and(
-          eq(SessionMessageTable.session_id, sessionID),
-          compaction ? gte(SessionMessageTable.seq, compaction.seq) : undefined,
-        ),
-      )
-      .orderBy(asc(SessionMessageTable.seq))
-      .all()
-      .pipe(Effect.orDie)
-    rawEntries = yield* Effect.forEach(rows, (row) =>
-      decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
-    )
-  }
+  const rawEntries = yield* Effect.forEach(rows, (row) =>
+    decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
+  )
 
   // Re-expansion may cross a native checkpoint whose completion already advanced the instruction
   // epoch: the baseline supersedes the chronological updates before it. Forks seed their baseline
@@ -221,14 +164,7 @@ const messageEntries = Effect.fnUntraced(function* (
 
   // Update cache.
   if (CACHE_ENABLED) {
-    inner.set(cacheKey, {
-      revisionKey,
-      compactionSeq,
-      maxSeq,
-      count,
-      maxUpdated,
-      entries: filtered,
-    })
+    cacheSet(inner, cacheKey, { revision: durableSeq, entries: filtered })
   }
 
   return filtered.slice() as Array<{ seq: number; message: SessionMessage.Info }>
