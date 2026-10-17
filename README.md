@@ -1,3 +1,16 @@
+# âš ï¸ NOT THE REAL OPENCODE â€” PERSONAL FORK
+
+**This is NOT the official OpenCode repository.**
+
+This is a personal fork of **[anomalyco/opencode](https://github.com/anomalyco/opencode)**, maintained by [@mtae](https://github.com/mtae) for personal experimentation and issue-reproduction work.
+
+- âž¡ï¸ The real project lives at **https://github.com/anomalyco/opencode**
+- âž¡ï¸ Real docs: **https://opencode.ai**
+- âŒ Do **not** file issues, open PRs, or expect support here â€” everything belongs upstream
+- âš ï¸ Code here may be modified, broken, or out of date at any time
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
