@@ -1,3 +1,4 @@
+import { timed } from "../bench-timing.js"
 export * as SessionContext from "./context.js"
 
 import { Model } from "../model.js"
@@ -167,7 +168,7 @@ const layer = Layer.effect(
 
     const load = Effect.fn("SessionContext.load")(function* (selection: Selection) {
       const model = yield* resolveModel(selection.session)
-      const history = yield* SessionHistory.entriesForRunner(
+      const history = yield* timed("history.entriesForRunner", SessionHistory.entriesForRunner)(
         db,
         selection.session.id,
         selection.instructions,

@@ -1,3 +1,4 @@
+import { timed } from "./bench-timing.js"
 export * as Integration from "./integration.js"
 
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -731,10 +732,10 @@ const layer = Layer.effect(
         if (!entry) return undefined
         return project(entry, resolveConnections(entry, yield* credentials.list(id)))
       }),
-      list: Effect.fn("Integration.list")(function* () {
+      list: timed("Integration.list", Effect.fn("Integration.list")(function* () {
         const saved = Map.groupBy(yield* credentials.all(), (credential) => credential.integrationID)
         return sortedEntries().map((entry) => project(entry, resolveConnections(entry, saved.get(entry.ref.id) ?? [])))
-      }),
+      })),
       connection: {
         active: Effect.fn("Integration.connection.active")(function* (id) {
           const entry = state.get().integrations.get(id)

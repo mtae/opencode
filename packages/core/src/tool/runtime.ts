@@ -1,5 +1,6 @@
 import { emptyInputJsonSchema, type ToolDefinition } from "@opencode/ai/effect"
 import { isRecord } from "@opencode/util/record"
+import { timedSync } from "../bench-timing.js"
 import { Tool } from "@opencode/schema/tool"
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec"
 import { Cache, Effect, JsonPointer, JsonSchema, Schema, SchemaIssue, SchemaRepresentation } from "effect"
@@ -171,7 +172,7 @@ const standardJsonSchema = (schema: StandardSchemaV1<any, any>, io: "input" | "o
   throw new Error(`Schema vendor "${schema["~standard"].vendor}" does not support JSON Schema conversion`)
 }
 
-const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
+const toJsonSchemaRaw = (schema: Schema.Top): JsonSchema.JsonSchema => {
   const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
   // Effect emits valid JSON Schema that some inference providers handle poorly. Simplify it
   // without changing validation: `{ type: "integer", allOf: [{ minimum: 0 }] }` becomes
@@ -186,6 +187,7 @@ const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
   )
   return dropDefinitionsIfResolved(inlineLocalReferences(normalized)) as JsonSchema.JsonSchema
 }
+const toJsonSchema = timedSync("toJsonSchema", toJsonSchemaRaw)
 
 const flattenAllOf = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(flattenAllOf)

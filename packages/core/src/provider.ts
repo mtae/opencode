@@ -1,3 +1,4 @@
+import { timed } from "./bench-timing.js"
 export * as Provider from "./provider.js"
 
 import { Context, Effect, Layer, Option, Schema, Stream, Struct } from "effect"
@@ -473,7 +474,7 @@ const layer = Layer.effect(
     // not query dependencies that have already closed.
     yield* Effect.addFinalizer(() => State.shutdown(state.reload()))
     let cached: { records: Snapshot["records"]; value: Snapshot } | undefined
-    const snapshot = Effect.fn("Provider.snapshot")(function* () {
+    const snapshotRaw = Effect.fn("Provider.snapshot")(function* () {
       while (true) {
         const revision = integrations.revision()
         const records = state.get()
@@ -508,6 +509,7 @@ const layer = Layer.effect(
         return value
       }
     })
+    const snapshot = timed("Provider.snapshot", snapshotRaw)
     let published: Snapshot | undefined
     const notify: Effect.Effect<void> = Effect.gen(function* () {
       const value = yield* snapshot()
