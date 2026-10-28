@@ -1,7 +1,7 @@
 // LOCAL ONLY: per-row Schema decode cost, to find pathological rows.
 import { Database } from "bun:sqlite"
 import { Effect, Schema } from "effect"
-import { SessionMessage } from "../src/session/message"
+import { SessionMessage } from "../../src/session/message.js"
 const [file, sessionID] = process.argv.slice(2)
 const db = new Database(file, { readonly: true })
 const decode = Schema.decodeUnknownEffect(SessionMessage.Info)
