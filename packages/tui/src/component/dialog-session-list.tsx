@@ -49,6 +49,9 @@ export function DialogSessionList() {
     activeLocation.ref ??
     data.location.default()
 
+  // Each fetch aborts the one before it, so the server drops a search nobody will read.
+  const inflight: { controller?: AbortController } = {}
+  onCleanup(() => inflight.controller?.abort())
   const [searchResults, { mutate: setSearchResults, refetch: refetchSearch }] = createResource(
     () => ({
       query: search().trim(),
@@ -56,6 +59,10 @@ export function DialogSessionList() {
       location: pickerLocation(),
     }),
     async ({ query, allProjects, location }) => {
+      inflight.controller?.abort()
+      const controller = new AbortController()
+      inflight.controller = controller
+      const signal = controller.signal
       try {
         if (!data.location.info(location)) await data.location.sync(location)
         const current = data.location.info(location)
@@ -69,7 +76,7 @@ export function DialogSessionList() {
                 subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
               }
         if (query) {
-          const response = await client.api.session.search({ ...scope, query, limit: 50, parentID: null })
+          const response = await client.api.session.search({ ...scope, query, limit: 50, parentID: null }, { signal })
           return {
             query,
             allProjects,
@@ -83,7 +90,10 @@ export function DialogSessionList() {
             error: undefined,
           }
         }
-        const response = await client.api.session.list({ ...scope, limit: 50, order: "desc", parentID: null })
+        const response = await client.api.session.list(
+          { ...scope, limit: 50, order: "desc", parentID: null },
+          { signal },
+        )
         return {
           query,
           allProjects,

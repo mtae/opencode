@@ -202,3 +202,54 @@ test("searches session content and shows the matching snippet", async () => {
     await temporary[Symbol.asyncDispose]()
   }
 })
+
+test("aborts a search the next keystroke supersedes", async () => {
+  const events = createEventStream()
+  const aborted: string[] = []
+  const started = Promise.withResolvers<void>()
+  const calls = createFetch((url, request) => {
+    if (url.pathname === "/api/location") {
+      const directory = url.searchParams.get("location[directory]") ?? process.cwd()
+      return json({ directory, project: { id: "proj_a", directory, canonical: directory } })
+    }
+    if (url.pathname === "/api/session") return json({ data: [], cursor: {} })
+    if (url.pathname !== "/api/experimental/session/search") return undefined
+    const query = url.searchParams.get("query") ?? ""
+    if (query === "frob")
+      return json({ data: [{ session: sessionInfo("ses_hit", "Refactor auth", process.cwd()), hits: 1 }], pending: 0 })
+    started.resolve()
+    return new Promise<Response>((_, reject) =>
+      request.signal.addEventListener("abort", () => {
+        aborted.push(query)
+        reject(request.signal.reason)
+      }),
+    )
+  }, events)
+  const temporary = await tmpdir()
+  let storage!: ReturnType<typeof useStorage>
+
+  function Probe() {
+    const dialog = useDialog()
+    storage = useStorage()
+    onMount(() => dialog.replace(() => <DialogSessionList />))
+    return null
+  }
+
+  const app = await renderDialog(createApi(calls.fetch), temporary.path, Probe)
+  app.renderer.start()
+
+  try {
+    await app.waitForFrame(
+      (frame) => frame.includes("Sessions") && app.renderer.currentFocusedRenderable instanceof InputRenderable,
+    )
+    await app.mockInput.typeText("fro")
+    await started.promise
+    await app.mockInput.typeText("b")
+    await app.waitForFrame((frame) => frame.includes("Refactor auth"))
+    expect(aborted).toEqual(["fro"])
+  } finally {
+    app.renderer.destroy()
+    await storage.flush()
+    await temporary[Symbol.asyncDispose]()
+  }
+})
