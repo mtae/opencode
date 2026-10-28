@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
+import { InputRenderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { onMount } from "solid-js"
 import { DialogSessionList } from "../../../src/component/dialog-session-list"
@@ -78,9 +79,24 @@ test("scopes sessions to the active session location", async () => {
     return null
   }
 
-  const app = await testRender(
+  const app = await renderDialog(createApi(calls.fetch), temporary.path, Probe)
+  app.renderer.start()
+
+  try {
+    const frame = await app.waitForFrame((value) => value.includes("Project B session"))
+    expect(frame).not.toContain("Project A session")
+    expect(requestedProjects.at(-1)).toBe("proj_b")
+  } finally {
+    app.renderer.destroy()
+    await storage.flush()
+    await temporary[Symbol.asyncDispose]()
+  }
+})
+
+function renderDialog(api: ReturnType<typeof createApi>, state: string, Probe: () => null) {
+  return testRender(
     () => (
-      <TestTuiContexts paths={{ state: temporary.path }}>
+      <TestTuiContexts paths={{ state }}>
         <TuiAppProvider value={{ name: "test", version: "test", channel: "test" }}>
           <StorageProvider>
             <ArgsProvider>
@@ -88,7 +104,7 @@ test("scopes sessions to the active session location", async () => {
                 <Keymap.Provider>
                   <ToastProvider>
                     <RouteProvider>
-                      <ClientProvider api={createApi(calls.fetch)}>
+                      <ClientProvider api={api}>
                         <PermissionProvider>
                           <DataProvider directory={process.cwd()}>
                             <LocationProvider>
@@ -116,12 +132,70 @@ test("scopes sessions to the active session location", async () => {
     ),
     { width: 100, height: 30, kittyKeyboard: true },
   )
+}
+
+const sessionInfo = (id: string, title: string, directory: string) => ({
+  id,
+  projectID: "proj_a",
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 1, updated: 2 },
+  title,
+  location: { directory },
+})
+
+test("searches session content and shows the matching snippet", async () => {
+  const events = createEventStream()
+  const searches: URLSearchParams[] = []
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/location") {
+      const directory = url.searchParams.get("location[directory]") ?? process.cwd()
+      return json({ directory, project: { id: "proj_a", directory, canonical: directory } })
+    }
+    if (url.pathname === "/api/session") return json({ data: [], cursor: {} })
+    if (url.pathname !== "/api/experimental/session/search") return undefined
+    searches.push(url.searchParams)
+    return json({
+      data: [
+        {
+          session: sessionInfo("ses_hit", "Refactor auth", process.cwd()),
+          hits: 2,
+          match: {
+            messageID: "msg_hit",
+            source: "assistant",
+            snippet: [
+              { text: "rotate the ", highlight: false },
+              { text: "frobnicator", highlight: true },
+              { text: " keys weekly", highlight: false },
+            ],
+          },
+        },
+      ],
+      pending: 0,
+    })
+  }, events)
+  const temporary = await tmpdir()
+  let storage!: ReturnType<typeof useStorage>
+
+  function Probe() {
+    const dialog = useDialog()
+    storage = useStorage()
+    onMount(() => dialog.replace(() => <DialogSessionList />))
+    return null
+  }
+
+  const app = await renderDialog(createApi(calls.fetch), temporary.path, Probe)
   app.renderer.start()
 
   try {
-    const frame = await app.waitForFrame((value) => value.includes("Project B session"))
-    expect(frame).not.toContain("Project A session")
-    expect(requestedProjects.at(-1)).toBe("proj_b")
+    await app.waitForFrame(
+      (frame) => frame.includes("Sessions") && app.renderer.currentFocusedRenderable instanceof InputRenderable,
+    )
+    await app.mockInput.typeText("frob")
+    const frame = await app.waitForFrame((value) => value.includes("rotate the frobnicator keys weekly"))
+    expect(frame).toContain("Refactor auth")
+    expect(searches.at(-1)?.get("query")).toBe("frob")
+    expect(searches.at(-1)?.get("parentID")).toBe("null")
   } finally {
     app.renderer.destroy()
     await storage.flush()
