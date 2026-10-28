@@ -27,6 +27,8 @@ export interface RealtimeConnectInput {
   readonly baseURL?: string
   /** Headers that host needs besides the API key, such as OpenCode's workspace. */
   readonly headers?: Readonly<Record<string, string>>
+  /** Legacy Codex negotiates raw SDP rather than the public Live session envelope. */
+  readonly liveProtocol?: "codex"
   readonly session?: RealtimeSession
   readonly transport: RealtimeTransportInput
 }
@@ -63,6 +65,18 @@ export const connect = Effect.fn("Realtime.connect")(function* (input: RealtimeC
 
   switch (resolved.id) {
     case "openai-live": {
+      if (input.liveProtocol === "codex") {
+        if (input.transport.type !== "webrtc") return yield* invalidRequest("Codex GPT-Live requires WebRTC")
+        const sdp = yield* post(
+          resolved.id,
+          `${input.baseURL ?? "https://chatgpt.com/backend-api/codex"}/realtime/calls?intent=quicksilver&architecture=avas`,
+          input.apiKey,
+          { sdp: input.transport.sdp, session },
+          Schema.String,
+          { headers: input.headers },
+        )
+        return { type: "webrtc" as const, sdp }
+      }
       const data = yield* post(
         resolved.id,
         `${input.baseURL ?? OPENAI_BASE_URL}/live/sessions`,
