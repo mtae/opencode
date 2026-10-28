@@ -17,6 +17,7 @@ import { Project } from "@opencode/core/project"
 import { Worktree } from "@opencode/core/worktree"
 import { Session } from "@opencode/core/session"
 import { Instance } from "@opencode/core/instance/service"
+import { SessionSearch } from "@opencode/core/session/search"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { ShellSelect } from "@opencode/core/shell/select"
@@ -65,6 +66,7 @@ const applicationServiceNodes = [
   Worktree.node,
   Session.node,
   Instance.node,
+  SessionSearch.node,
   SessionTransfer.node,
   InstructionEntry.node,
   SdkPlugins.node,
