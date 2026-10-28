@@ -1,7 +1,7 @@
 import { abort } from "@opencode/util/abort"
 import { getFilename } from "@opencode/util/path"
 import type { Project } from "@/runtime/server/types"
-import type { SessionInfo } from "@opencode/client/promise"
+import type { OpenCodeClient, SessionInfo, SessionSearchMatch } from "@opencode/client/promise"
 import { useDialog } from "@opencode/ui/context/dialog"
 import { useQueryClient } from "@tanstack/solid-query"
 import { createMemo, onCleanup } from "solid-js"
@@ -153,8 +153,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
     server: ServerConnection.key(serverSDK.server),
     known: createKnownServerSessions(serverCtx),
     projects: serverCtx.projects.list,
-    load: (search, signal) =>
-      serverSDK.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal }),
+    load: (search, signal) => loadServerSessions(serverSDK.api, search, signal),
     get: (sessionID, signal) => serverSDK.api.session.get({ sessionID }, { signal }),
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
@@ -240,13 +239,42 @@ type SessionSearchState = {
   abort?: AbortController
 }
 
+type SessionHit = { session: SessionInfo; match?: SessionSearchMatch }
+
+/** Searches Session titles and conversations for a query; without one, lists recent Sessions. */
+export function loadServerSessions(api: Pick<OpenCodeClient, "session">, search: string, signal: AbortSignal) {
+  const list = () =>
+    api.session
+      .list({ parentID: null, search, archived: false, limit: 50 }, { signal })
+      .then((page) => page.data.map((session): SessionHit => ({ session })))
+
+  if (!search) return list()
+
+  // Servers without the experimental content search still match titles.
+  return api.session
+    .search({ parentID: null, query: search, archived: false, limit: 50 }, { signal })
+    .then((result): SessionHit[] => result.data, list)
+}
+
+/** The matched excerpt, starting shortly before the first highlighted term so it survives truncation. */
+function snippetText(match: SessionSearchMatch) {
+  const text = match.snippet.map((fragment) => fragment.text).join("")
+  const first = match.snippet.findIndex((fragment) => fragment.highlight)
+  const offset = match.snippet.slice(0, Math.max(0, first)).reduce((total, fragment) => total + fragment.text.length, 0)
+
+  if (offset <= 24) return text
+
+  // Drop the partial word the cut lands in.
+  return "…" + text.slice(offset - 24, offset).replace(/^\S*\s+/, "") + text.slice(offset)
+}
+
 export function createServerSessionEntries(props: {
   server: ServerConnection.Key
   known?: () => SessionInfo[]
   /** Hides sessions deleted since they were loaded. */
   apply?: (sessions: SessionInfo[]) => SessionInfo[]
   projects: () => Project[]
-  load: (search: string, signal: AbortSignal) => Promise<{ data: SessionInfo[] }>
+  load: (search: string, signal: AbortSignal) => Promise<SessionHit[]>
   get: (sessionID: string, signal: AbortSignal) => Promise<SessionInfo>
   untitled: () => string
   category: () => string
@@ -271,11 +299,11 @@ export function createServerSessionEntries(props: {
 
   onCleanup(() => abort(state.abort))
 
-  const entries = (sessions: SessionInfo[], search: string): CommandPaletteEntry[] => {
+  const entries = (hits: SessionHit[], search: string): CommandPaletteEntry[] => {
     const projects = props.projects()
     const category = search ? props.category() : props.recentCategory()
 
-    return sessions.flatMap((session) => {
+    return hits.flatMap(({ session, match }) => {
       if (session.time.archived) return []
 
       const project = projectForSession(session, projects)
@@ -285,7 +313,13 @@ export function createServerSessionEntries(props: {
           id: `session:${props.server}:${session.id}`,
           type: "session" as const,
           title: session.title || props.untitled(),
-          description: project ? displayName(project) : getFilename(session.location.directory),
+          // A match in the conversation shows where it matched; a title match shows where the Session lives.
+          description:
+            match && match.source !== "title"
+              ? snippetText(match)
+              : project
+                ? displayName(project)
+                : getFilename(session.location.directory),
           category,
           directory: session.location.directory,
           sessionID: session.id,
@@ -321,12 +355,12 @@ export function createServerSessionEntries(props: {
 
     const [listed, exact] = await Promise.all([
       props.load(search, current.signal).then(
-        (result) => ({ items: result.data, failed: false }),
+        (items) => ({ items, failed: false }),
         () => ({ items: [], failed: true }),
       ),
       looksLikeSessionID(search)
         ? props.get(search, current.signal).then(
-            (result) => [result],
+            (session): SessionHit[] => [{ session }],
             () => [],
           )
         : Promise.resolve([]),
@@ -336,10 +370,12 @@ export function createServerSessionEntries(props: {
 
     if (listed.failed && exact.length === 0) throw new Error("Session search failed")
 
-    const loaded = [...new Map([...exact, ...listed.items].map((session) => [session.id, session] as const)).values()]
+    const loaded = [...new Map([...exact, ...listed.items].map((hit) => [hit.session.id, hit] as const)).values()]
     // Keep names learned while this palette is open available to subsequent keystrokes.
     setStore("loaded", (previous) => [
-      ...new Map([...previous, ...loaded].map((session) => [session.id, session] as const)).values(),
+      ...new Map(
+        [...previous, ...loaded.map((hit) => hit.session)].map((session) => [session.id, session] as const),
+      ).values(),
     ])
 
     // The local collection owns the recent rows, including newly loaded ones.
@@ -350,7 +386,11 @@ export function createServerSessionEntries(props: {
     search,
     items(text: string) {
       const search = text.trim()
-      const all = entries(known(), search)
+
+      const all = entries(
+        known().map((session) => ({ session })),
+        search,
+      )
 
       if (!search) return all.slice(0, props.recentLimit ?? ENTRY_LIMIT)
 
