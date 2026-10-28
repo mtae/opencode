@@ -23,9 +23,14 @@ Updated: 2026-10-19. The owner session is the Claude Code desktop session in `C:
 - Always isolate XDG_DATA/CONFIG/STATE/CACHE_HOME plus OPENCODE_DB. Pass `--server` explicitly, and use ports 47900+.
 - Kill processes by the PID on the port, never by name.
 
-## Running side work (background agents launched 2026-10-19)
-- **Full-text session search:** worktree `C:\Users\aahlad\Documents\claude\opencode-fts`, branch `session-fts`. Writes `FTS-NOTES.md` (uncommitted). No push or PR without the user.
-- **Request-encoding research:** writes `scratchpad\stringify\REPORT.md`.
+## Side work
+- **Full-text session search (done 2026-10-28):**
+  - Worktree `C:\Users\aahlad\Documents\claude\opencode-fts`, branch `session-fts`: 5 commits on dev 86ce19d96e, local only.
+  - Details are in `FTS-NOTES.md` there (uncommitted).
+  - The index lives in a separate `<db>-search` file, built lazily on the first search.
+  - At 1x: 20 MB, a 3.9 s build, 4–60 ms queries. A common word at 10x takes ~0.5 s.
+  - No push or PR without the user.
+- **Request-encoding research (done):** see perf/ENCODING.md.
 
 ## Measured so far (origin/dev f36cda5bc8, Windows, from source, fake provider)
 Gap between steps (provider response end → next request), CPU-bound the whole time:
