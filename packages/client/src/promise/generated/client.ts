@@ -87,6 +87,8 @@ import type {
   SessionViewOutput,
   ExperimentalSessionStatsInput,
   ExperimentalSessionStatsOutput,
+  ExperimentalSessionSearchInput,
+  ExperimentalSessionSearchOutput,
   ExperimentalSessionImportInput,
   ExperimentalSessionImportOutput,
   ExperimentalSessionExportInput,
@@ -1056,6 +1058,26 @@ export function make(options: ClientOptions) {
             },
             requestOptions,
           ).then((value) => value.data),
+        search: (input: ExperimentalSessionSearchInput, requestOptions?: RequestOptions) =>
+          request<ExperimentalSessionSearchOutput>(
+            {
+              method: "GET",
+              path: `/api/experimental/session/search`,
+              query: {
+                query: input["query"],
+                limit: input["limit"],
+                parentID: input["parentID"],
+                archived: input["archived"],
+                directory: input["directory"],
+                project: input["project"],
+                subpath: input["subpath"],
+              },
+              successStatus: 200,
+              declaredStatuses: [400, 401],
+              empty: false,
+            },
+            requestOptions,
+          ),
         import: (input: ExperimentalSessionImportInput, requestOptions?: RequestOptions) =>
           request<{ readonly data: ExperimentalSessionImportOutput }>(
             {
@@ -2558,6 +2580,8 @@ export function make(options: ClientOptions) {
       ...client.session,
       /** @deprecated Use `client.experimental.session.stats`. Removed in the next minor. */
       stats: client.experimental.session.stats,
+      /** @deprecated Use `client.experimental.session.search`. Removed in the next minor. */
+      search: client.experimental.session.search,
       /** @deprecated Use `client.experimental.session.import`. Removed in the next minor. */
       import: client.experimental.session.import,
       /** @deprecated Use `client.experimental.session.export`. Removed in the next minor. */

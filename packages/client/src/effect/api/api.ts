@@ -443,6 +443,9 @@ export interface SessionApi<E = never> {
   /** @deprecated Use `client.experimental.session.stats`. Removed in the next minor. */
   readonly stats: ExperimentalSessionStatsOperation<E>
 
+  /** @deprecated Use `client.experimental.session.search`. Removed in the next minor. */
+  readonly search: ExperimentalSessionSearchOperation<E>
+
   /** @deprecated Use `client.experimental.session.import`. Removed in the next minor. */
   readonly import: ExperimentalSessionImportOperation<E>
 
@@ -540,6 +543,33 @@ export type ExperimentalSessionStatsOutput = {
 export type ExperimentalSessionStatsOperation<E = never> = (
   input?: ExperimentalSessionStatsInput,
 ) => Effect.Effect<ExperimentalSessionStatsOutput, E>
+
+export type ExperimentalSessionSearchInput = {
+  readonly query: string
+  readonly limit?: number | undefined
+  readonly parentID?: Session.ID | null | undefined
+  readonly archived?: boolean | undefined
+  readonly directory?: AbsolutePath | undefined
+  readonly project?: Project.ID | undefined
+  readonly subpath?: RelativePath | undefined
+}
+export type ExperimentalSessionSearchOutput = {
+  readonly data: ReadonlyArray<{
+    readonly hits: number
+    readonly match?:
+      | {
+          readonly messageID?: SessionMessage.ID | undefined
+          readonly source: "title" | "user" | "assistant" | "synthetic" | "shell" | "tool"
+          readonly snippet: ReadonlyArray<{ readonly text: string; readonly highlight: boolean }>
+        }
+      | undefined
+    readonly session: Session.Info
+  }>
+  readonly pending: number
+}
+export type ExperimentalSessionSearchOperation<E = never> = (
+  input: ExperimentalSessionSearchInput,
+) => Effect.Effect<ExperimentalSessionSearchOutput, E>
 
 export type ExperimentalSessionImportInput = {
   readonly info: Session.Info
@@ -1420,6 +1450,7 @@ export type ExperimentalSessionLogOperation<E = never> = (
 
 export interface ExperimentalSessionApi<E = never> {
   readonly stats: ExperimentalSessionStatsOperation<E>
+  readonly search: ExperimentalSessionSearchOperation<E>
   readonly import: ExperimentalSessionImportOperation<E>
   readonly export: ExperimentalSessionExportOperation<E>
   readonly skill: ExperimentalSessionSkillOperation<E>
@@ -2703,6 +2734,15 @@ export type SessionStatsOutput = ExperimentalSessionStatsOutput
 
 /** @deprecated Use `ExperimentalSessionStatsOperation`. Removed in the next minor. */
 export type SessionStatsOperation<E = never> = ExperimentalSessionStatsOperation<E>
+
+/** @deprecated Use `ExperimentalSessionSearchInput`. Removed in the next minor. */
+export type SessionSearchInput = ExperimentalSessionSearchInput
+
+/** @deprecated Use `ExperimentalSessionSearchOutput`. Removed in the next minor. */
+export type SessionSearchOutput = ExperimentalSessionSearchOutput
+
+/** @deprecated Use `ExperimentalSessionSearchOperation`. Removed in the next minor. */
+export type SessionSearchOperation<E = never> = ExperimentalSessionSearchOperation<E>
 
 /** @deprecated Use `ExperimentalSessionImportInput`. Removed in the next minor. */
 export type SessionImportInput = ExperimentalSessionImportInput

@@ -152,6 +152,10 @@ export type SessionStatsToolUsage = {
 
 export type SessionStatsActivity = { date: string; steps: number }
 
+export type SessionSearchSource = "title" | "user" | "assistant" | "synthetic" | "shell" | "tool"
+
+export type SessionSearchFragment = { text: string; highlight: boolean }
+
 export type InstructionEntryKey = string
 
 export type EventID = string
@@ -649,6 +653,12 @@ export type SessionStatsTools =
   | { mode: "none" }
   | { mode: "summary"; totals: SessionStatsToolTotals }
   | { mode: "detail"; totals: SessionStatsToolTotals; usage: Array<SessionStatsToolUsage> }
+
+export type SessionSearchMatch = {
+  messageID?: SessionMessageID
+  source: SessionSearchSource
+  snippet: Array<SessionSearchFragment>
+}
 
 export type InstructionEntryInfo = { key: InstructionEntryKey; value: JsonValue }
 
@@ -2568,6 +2578,8 @@ export type SessionsResponse = {
   cursor: { previous?: SessionsCursor | null; next?: SessionsCursor | null }
 }
 
+export type SessionSearchResult = { hits: number; match?: SessionSearchMatch; session: SessionInfo }
+
 export type SessionInboxInfo = SessionInboxUser | SessionInboxSynthetic | SessionInboxCompaction | SessionInboxMove
 
 export type SessionMessageAssistant = {
@@ -2623,6 +2635,8 @@ export type SessionMessageAssistantContentEncoded =
 export type GenerateDecisionsResponse = { data: GenerateDecisionResult }
 
 export type FormInfo1 = { id: FormID; sessionID: string; title: string; metadata?: FormMetadata1; fields: FormFields2 }
+
+export type SessionSearchResponse = { data: Array<SessionSearchResult>; pending: number }
 
 export type SessionMessageInfo =
   | SessionMessageAgentSelected
@@ -3661,6 +3675,18 @@ export type ExperimentalSessionStatsInput = {
 
 export type ExperimentalSessionStatsOutput = { data: SessionStatsInfo }["data"]
 
+export type ExperimentalSessionSearchInput = {
+  readonly query: string
+  readonly limit?: number | undefined
+  readonly parentID?: string | null | undefined
+  readonly archived?: boolean | undefined
+  readonly directory?: string | undefined
+  readonly project?: string | undefined
+  readonly subpath?: string | undefined
+}
+
+export type ExperimentalSessionSearchOutput = SessionSearchResponse
+
 export type ExperimentalSessionImportInput = {
   readonly info: {
     readonly id: string
@@ -4591,6 +4617,12 @@ export type SessionStatsInput = ExperimentalSessionStatsInput
 
 /** @deprecated Use `ExperimentalSessionStatsOutput`. Removed in the next minor. */
 export type SessionStatsOutput = ExperimentalSessionStatsOutput
+
+/** @deprecated Use `ExperimentalSessionSearchInput`. Removed in the next minor. */
+export type SessionSearchInput = ExperimentalSessionSearchInput
+
+/** @deprecated Use `ExperimentalSessionSearchOutput`. Removed in the next minor. */
+export type SessionSearchOutput = ExperimentalSessionSearchOutput
 
 /** @deprecated Use `ExperimentalSessionImportInput`. Removed in the next minor. */
 export type SessionImportInput = ExperimentalSessionImportInput
