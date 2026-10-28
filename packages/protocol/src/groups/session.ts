@@ -187,12 +187,13 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
             description: "Sessions not yet indexed. Their messages are missing from these results.",
           }),
         }).annotate({ identifier: "SessionSearchResponse" }),
+        error: ConflictError,
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "experimental.session.search",
           summary: "Search sessions",
           description:
-            "Rank sessions by matches in their titles and message text, with a highlighted snippet of the best match. The index is built on first use and kept current as searches run.",
+            "Rank sessions by matches in their titles and message text, with a highlighted snippet of the best match. The index is built on first use and kept current as searches run. Searches run one at a time; one still waiting when a newer search arrives is answered with a conflict instead of running.",
         }),
       ),
     )
