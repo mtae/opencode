@@ -31,12 +31,15 @@ The goal is to profile the CLI, TUI and local server across common workflows, an
 - [ ] Would a faster local tokenizer help? Where is tokenizing or counting on the hot path?
 - [ ] Prefix-referenced requests: can the server keep cached encoded prefixes per session, subagent and fork, so a step only encodes new messages? (The stringify agent is researching this.)
 
-## Fix candidates (ranked by headroom; fill in as measured)
-1. Base64 regex cliff: upstream PR #51272 exists. Comment with data, or offer a rebase.
-2. Delta/prefix history cache (#51497, no live PR).
-3. Cache per-message request JSON (pending the agent's report).
-4. `Provider.snapshot` 8× per step (check #57223 and #56994 first).
-5. Cache tool JSON schemas.
+## Fix candidates (re-ranked 2026-10-27)
+1. **TUI theme-mode wait: 1.04 s on every start** in terminals that don't answer OSC 10/11 (ConPTY, and others). Fix with a DA1 sentinel in opentui, plus a cached last mode in opencode. Not addressed upstream.
+2. **Request encode, 165 ms/step at 9 MB:** per-message UTF-8 fragments, then a prefix memo (see ENCODING.md).
+3. Session-open compression: brotli on large message pages (unchanged on dev).
+4. Delta/prefix history cache (#51497): now ~60 ms at 9 MB, so lower priority.
+- ~~Base64 regex~~, ~~`Provider.snapshot` 8×~~, ~~tool schema cache~~: fixed upstream.
+
+## Blockers
+- The pre-push hook needs Bun 1.4.4; 1.4.3 is installed. Ask the user before upgrading.
 
 ## Possible upstream PR later: server step benchmark (flesh out)
 - A deterministic benchmark in-repo:

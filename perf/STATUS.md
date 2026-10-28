@@ -66,6 +66,61 @@ Other findings:
 - **Startup, binary v2.0.32:** 0.7–1.3 s with an empty DB, 2.2 s with the real DB (+1–1.5 s, unexplained). From source it takes ~17 s, mostly transpiling; ignore that number.
 - **Upload:** 7 MB per step is ~0.2 s at 300 Mbps, so it's secondary on fiber. The request-size cap (Anthropic 32 MB, unverified today) matters for heavy image sessions.
 
+## Re-measured 2026-10-27
+Measured on dev 86ce19d96e, from source, with Bun 1.4.3. Other apps had the machine at ~74% load, so wall-clock numbers are noisy.
+- **DB snapshot:** `scratchpad\perf\snap2.db`, 244 MB, taken from the v2.2.0 live DB. Old rows aren't migrated to the blob table, so images are still inline.
+- **Bun version:** dev pins Bun 1.4.4. With 1.4.3, `bun typecheck` fails on `--no-script`, which blocks the pre-push hook.
+
+Gap per step:
+
+| Session | Before (f36cda5bc8) | Now |
+|---|---|---|
+| small | ~95 ms | ~144 ms (machine load; no stage grew) |
+| 5 MB | ~145 ms | ~159 ms |
+| 9 MB | ~400 ms | ~222 ms |
+
+**What upstream fixed:**
+- `Provider.snapshot`: 8×/step (26 ms) → 3×/step (9–14 ms).
+- `toJsonSchema`: 28 → 2 calls/step.
+- 9 MB history load: ~315 → ~60 ms.
+
+**Why:**
+- The base64 regex fix landed (`prompt.ts:24`: length%4 plus a simple regex). The old pattern stays only as an annotation, so the JSON Schema output is unchanged.
+- One history load per step (#59091).
+- The sanitize copy fix landed (#57173).
+- New media writes go to `media:<hash>` blobs (#58656).
+
+**Profiled 9 MB step** (543 ms/step busy, profiler overhead included):
+
+| Cost | ms/step |
+|---|---|
+| Unattributed | 181 |
+| **Request build/encode** (`encodeBody`, ai/route/transport/http.ts:36) | **165** |
+| DB | 86 |
+| History | 58 |
+| Projectors | 19 |
+| Snapshot | 13 |
+
+Encode is now the top attributable cost, so ENCODING.md options 1–2 come next.
+
+**TUI session open:** v2.2.0 still takes ~2.0 s. The terminal shows three silences:
+- ~0.4 s startup;
+- ~1.04 s waiting on the theme mode (below);
+- ~0.4 s before the session content shows.
+
+**The 1.04 s:**
+- `waitForThemeMode(1000)` (tui/src/app.tsx:316) times out.
+- opentui settles the theme mode only on OSC 10/11 replies, and ConPTY on Windows 10 passes none through. A program inside ConPTY receives only ConPTY's own DA1 reply (`scratchpad\watchtest\drive.ts`).
+- So any terminal that doesn't answer OSC 10/11 pays a full second at every start.
+
+**Upstream:**
+- opencode #58678 adds a macOS fallback only after the timeout.
+- opentui #1562 helps only when OSC 11 is answered.
+
+**Fix idea:**
+- A DA1 sentinel: send `CSI c` after the OSC queries. A DA1 reply with no OSC 11 before it means unsupported, so settle immediately.
+- Also cache the last mode.
+
 ## Upstream activity (as of 2026-10-19)
 - **kitlangton** opened ~40 PRs today. Measure these areas but don't work on them:
   - media: #56989, #56990, #56991, #56993
