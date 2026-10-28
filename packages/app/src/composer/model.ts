@@ -23,7 +23,7 @@ import { Skill } from "@opencode/schema/skill"
 import { Session } from "@opencode/schema/session"
 import { abort } from "@opencode/util/abort"
 import { parseSessionMention } from "@opencode/util/session-mention"
-import { createKnownServerSessions, createServerSessionEntries } from "@/shell/commands/palette"
+import { createKnownServerSessions, createServerSessionEntries, loadServerSessions } from "@/shell/commands/palette"
 import { matchesSessionTitle } from "./session-match"
 import type { ComposerAdapter, ComposerControls, ComposerQueue } from "./adapter"
 import { isAttachment } from "./prompt-parts"
@@ -217,10 +217,10 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
     known: createKnownServerSessions(server.ctx),
     projects: server.ctx.projects.list,
     load: async (search, signal) => {
-      const page = await serverSDK.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal })
-      page.data.forEach(data.session.remember)
+      const hits = await loadServerSessions(serverSDK.api, search, signal)
+      hits.forEach((hit) => data.session.remember(hit.session))
 
-      return page
+      return hits
     },
     get: async (sessionID, signal) => {
       const session = await serverSDK.api.session.get({ sessionID }, { signal })

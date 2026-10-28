@@ -8,6 +8,7 @@ import {
   createCommandPaletteCommandEntry,
   createKnownServerSessions,
   createServerSessionEntries,
+  loadServerSessions,
   type CommandPaletteEntry,
   type PaletteHighlight,
 } from "@/shell/commands/palette"
@@ -36,8 +37,7 @@ export function HomeCommandPalette(props: {
     server: ServerConnection.key(props.server),
     known: createKnownServerSessions(server),
     projects: server.projects.list,
-    load: (search, signal) =>
-      server.sdk.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal }),
+    load: (search, signal) => loadServerSessions(server.sdk.api, search, signal),
     get: (sessionID, signal) => server.sdk.api.session.get({ sessionID }, { signal }),
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
