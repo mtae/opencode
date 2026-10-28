@@ -1,6 +1,21 @@
 export * as SessionStore from "./store.js"
 
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm"
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Project } from "@opencode/schema/project"
 import { Workspace } from "@opencode/schema/workspace"
@@ -73,7 +88,8 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
-  readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
+  /** With `search`, a Session matches by title or by being one of `matches`, such as full-text search results. */
+  readonly list: (input?: ListInput & { readonly matches?: ReadonlyArray<Session.ID> }) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly message: (
@@ -168,7 +184,10 @@ const layer = Layer.effect(
         const order = direction === "previous" ? (requestedOrder === "asc" ? "desc" : "asc") : requestedOrder
         const sortColumn = SessionTable.time_updated
         const conditions = filters(input)
-        if (input.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
+        if (input.search) {
+          const title = like(SessionTable.title, `%${input.search}%`)
+          conditions.push(input.matches?.length ? or(title, inArray(SessionTable.id, [...input.matches]))! : title)
+        }
         if (input.anchor) {
           conditions.push(
             order === "asc"
