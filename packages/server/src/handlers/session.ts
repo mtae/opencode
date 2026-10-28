@@ -69,6 +69,12 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.list",
         Effect.fn(function* (ctx) {
+          // Temporary: shows whether a client (the mobile app) searches through list's `search` parameter.
+          if (ctx.query.search)
+            yield* Effect.logInfo("session.list search", {
+              client: ctx.request.headers["user-agent"],
+              length: ctx.query.search.length,
+            })
           return yield* session
             .list(ctx.query)
             .pipe(
