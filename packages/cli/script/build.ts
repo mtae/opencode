@@ -188,6 +188,8 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
         `--user-agent=opencode/${Script.channel}/${Script.version}/cli`,
         "--use-system-ca",
         "--no-warnings",
+        // perf-harness only: extra runtime flags such as --cpu-prof for profiling a compiled binary.
+        ...(process.env.PERF_EXEC_ARGV?.split(" ") ?? []),
         "--",
       ],
       windows: {},
