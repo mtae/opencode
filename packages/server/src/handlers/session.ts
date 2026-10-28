@@ -103,7 +103,14 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.search",
         Effect.fn(function* (ctx) {
-          return yield* search.search(ctx.query)
+          return yield* search
+            .search(ctx.query)
+            .pipe(
+              Effect.catchTag(
+                "SessionSearch.SupersededError",
+                () => new ConflictError({ resource: "session.search", message: "Superseded by a newer search" }),
+              ),
+            )
         }),
       )
       .handle(

@@ -1073,7 +1073,7 @@ export function make(options: ClientOptions) {
                 subpath: input["subpath"],
               },
               successStatus: 200,
-              declaredStatuses: [400, 401],
+              declaredStatuses: [400, 401, 409],
               empty: false,
             },
             requestOptions,
