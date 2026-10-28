@@ -40,6 +40,26 @@ const ListAllInput = Schema.Struct(ListInputBase)
 export const ListInput = Schema.Union([ListDirectoryInput, ListProjectInput, ListAllInput])
 export type ListInput = typeof ListInput.Type
 
+/** The Session filters shared by list and search: everything but the search text, order, and paging. */
+export type Filter = DistributiveOmit<ListInput, "search" | "limit" | "order" | "anchor">
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+export function filters(input: Filter) {
+  const conditions: SQL[] = []
+  if ("directory" in input) conditions.push(eq(SessionTable.directory, input.directory))
+  if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
+  if ("project" in input) conditions.push(eq(SessionTable.project_id, input.project))
+  if ("project" in input && input.subpath !== undefined) conditions.push(eq(SessionTable.path, input.subpath))
+  if (input.parentID !== undefined)
+    conditions.push(
+      input.parentID === null ? isNull(SessionTable.parent_id) : eq(SessionTable.parent_id, input.parentID),
+    )
+  if (input.archived !== undefined)
+    conditions.push(input.archived ? isNotNull(SessionTable.time_archived) : isNull(SessionTable.time_archived))
+  return conditions
+}
+
 export type MessagesInput = {
   sessionID: Session.ID
   limit?: number
@@ -147,18 +167,8 @@ const layer = Layer.effect(
         const requestedOrder = input.order ?? "desc"
         const order = direction === "previous" ? (requestedOrder === "asc" ? "desc" : "asc") : requestedOrder
         const sortColumn = SessionTable.time_updated
-        const conditions: SQL[] = []
-        if ("directory" in input) conditions.push(eq(SessionTable.directory, input.directory))
-        if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
-        if ("project" in input) conditions.push(eq(SessionTable.project_id, input.project))
-        if ("project" in input && input.subpath !== undefined) conditions.push(eq(SessionTable.path, input.subpath))
+        const conditions = filters(input)
         if (input.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
-        if (input.parentID !== undefined)
-          conditions.push(
-            input.parentID === null ? isNull(SessionTable.parent_id) : eq(SessionTable.parent_id, input.parentID),
-          )
-        if (input.archived !== undefined)
-          conditions.push(input.archived ? isNotNull(SessionTable.time_archived) : isNull(SessionTable.time_archived))
         if (input.anchor) {
           conditions.push(
             order === "asc"
