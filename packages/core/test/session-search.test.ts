@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { DateTime, Effect, Schema } from "effect"
+import { existsSync } from "node:fs"
+import path from "node:path"
+import { DateTime, Effect, Fiber, Schema } from "effect"
 import { eq, sql } from "drizzle-orm"
 import { Bus } from "@opencode/core/bus"
 import { Database } from "@opencode/core/database/database"
@@ -19,7 +21,8 @@ import { Session } from "@opencode/schema/session"
 import { SessionEvent } from "@opencode/schema/session-event"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { testEffect } from "./lib/effect"
+import { tmpdirScoped } from "./fixture/tmpdir"
+import { it as plain, testEffect } from "./lib/effect"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -227,7 +230,6 @@ describe("SessionSearch", () => {
         index: [
           "session_search_doc",
           "session_search_doc_delete",
-          "session_search_doc_insert",
           "session_search_doc_message_idx",
           "session_search_fts",
           "session_search_fts_config",
@@ -235,6 +237,9 @@ describe("SessionSearch", () => {
           "session_search_fts_docsize",
           "session_search_fts_idx",
           "session_search_state",
+          "session_search_text",
+          "session_search_text_delete",
+          "session_search_text_insert",
         ],
       })
       const indexed = yield* countDocs(session)
@@ -339,6 +344,58 @@ describe("SessionSearch", () => {
       expect(ids(yield* search("capybara", { directory: AbsolutePath.make("/elsewhere") }))).toEqual([])
       expect(ids(yield* search("capybara", { limit: 1 }))).toHaveLength(1)
     }),
+  )
+})
+
+// A database in a file is searched by a worker thread, with the index in its own file beside it.
+const withFileDatabase = <A, E, R>(body: (file: string) => Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const tmp = yield* tmpdirScoped()
+    const file = path.join(tmp.path, "opencode.db")
+    return yield* body(file).pipe(
+      Effect.provide(
+        AppNodeBuilder.build(
+          LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, SessionSearch.node]),
+          [Database.node.replace(Database.configured({ path: file }))],
+        ),
+      ),
+    )
+  })
+
+describe("SessionSearch worker", () => {
+  plain.live("searches messages from a worker and keeps the index out of the main database", () =>
+    withFileDatabase((file) =>
+      Effect.gen(function* () {
+        yield* seedProject
+        const session = yield* createSession("ses_worker", "Unrelated")
+        yield* prompt(session, "msg_worker", "The frobnicator resizes images off the main thread")
+
+        const found = yield* search("frobnicator")
+        expect(found.data[0]?.match).toMatchObject({ messageID: "msg_worker", source: "user" })
+        expect(ids(yield* search("resiz"))).toEqual(["ses_worker"])
+        expect(existsSync(`${file}-search`)).toBe(true)
+        expect((yield* searchTables).main).toEqual([])
+      }),
+    ),
+  )
+
+  plain.live("answers a search superseded while it waited with a conflict", () =>
+    withFileDatabase(() =>
+      Effect.gen(function* () {
+        yield* seedProject
+        yield* prompt(yield* createSession("ses_worker", "Unrelated"), "msg_worker", "frobnicator")
+        yield* search("frobnicator")
+
+        // The first runs, the second waits, and the third replaces the second before it starts.
+        const fibers = yield* Effect.forEach(["frob", "frobn", "frobni"], (query) =>
+          search(query).pipe(
+            Effect.match({ onSuccess: ids, onFailure: (error) => error._tag }),
+            Effect.forkChild({ startImmediately: true }),
+          ),
+        )
+        expect(yield* Fiber.joinAll(fibers)).toEqual([["ses_worker"], "SessionSearch.SupersededError", ["ses_worker"]])
+      }),
+    ),
   )
 })
 
