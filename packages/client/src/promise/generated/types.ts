@@ -90,6 +90,10 @@ export type SessionStatsToolUsage = {
 
 export type SessionStatsActivity = { date: string; steps: number }
 
+export type SessionSearchSource = "title" | "user" | "assistant" | "synthetic" | "shell" | "tool"
+
+export type SessionSearchFragment = { text: string; highlight: boolean }
+
 export type PromptBase64 = string
 
 export type PromptFileSource = { type: "inline" } | { type: "uri"; uri: string }
@@ -437,6 +441,12 @@ export type SessionStatsTools =
   | { mode: "none" }
   | { mode: "summary"; totals: SessionStatsToolTotals }
   | { mode: "detail"; totals: SessionStatsToolTotals; usage: Array<SessionStatsToolUsage> }
+
+export type SessionSearchMatch = {
+  messageID?: SessionMessageID
+  source: SessionSearchSource
+  snippet: Array<SessionSearchFragment>
+}
 
 export type GenerateImageOutput2 = { type: "image"; data: PromptBase64; mime: string; name?: string }
 
@@ -2526,6 +2536,8 @@ export type SessionsResponse = {
   cursor: { previous?: SessionsCursor | null; next?: SessionsCursor | null }
 }
 
+export type SessionSearchResult = { hits: number; match?: SessionSearchMatch; session: SessionInfo }
+
 export type SessionInboxInfo = SessionInboxUser | SessionInboxSynthetic | SessionInboxCompaction | SessionInboxMove
 
 export type SessionMessageAssistant = {
@@ -2581,6 +2593,8 @@ export type IntegrationExternalMethod = { id: IntegrationMethodID; type: "extern
 export type GenerateDecisionsResponse = { data: GenerateDecisionResult }
 
 export type FormInfo1 = { id: FormID; sessionID: string; title: string; metadata?: FormMetadata1; fields: FormFields2 }
+
+export type SessionSearchResponse = { data: Array<SessionSearchResult>; pending: number }
 
 export type SessionMessageInfo =
   | SessionMessageAgentSelected
@@ -3150,6 +3164,18 @@ export type SessionStatsInput = {
 }
 
 export type SessionStatsOutput = { data: SessionStatsInfo }["data"]
+
+export type SessionSearchInput = {
+  readonly query: string
+  readonly limit?: number | undefined
+  readonly parentID?: string | null | undefined
+  readonly archived?: boolean | undefined
+  readonly directory?: string | undefined
+  readonly project?: string | undefined
+  readonly subpath?: string | undefined
+}
+
+export type SessionSearchOutput = SessionSearchResponse
 
 export type SessionCreateInput = {
   readonly id?: string | null | undefined

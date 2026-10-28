@@ -22,6 +22,8 @@ import type {
   SessionListOutput,
   SessionStatsInput,
   SessionStatsOutput,
+  SessionSearchInput,
+  SessionSearchOutput,
   SessionCreateInput,
   SessionCreateOutput,
   SessionImportInput,
@@ -612,6 +614,26 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ).then((value) => value.data),
+      search: (input: SessionSearchInput, requestOptions?: RequestOptions) =>
+        request<SessionSearchOutput>(
+          {
+            method: "GET",
+            path: `/api/experimental/session/search`,
+            query: {
+              query: input["query"],
+              limit: input["limit"],
+              parentID: input["parentID"],
+              archived: input["archived"],
+              directory: input["directory"],
+              project: input["project"],
+              subpath: input["subpath"],
+            },
+            successStatus: 200,
+            declaredStatuses: [400, 401],
+            empty: false,
+          },
+          requestOptions,
+        ),
       create: (input?: SessionCreateInput, requestOptions?: RequestOptions) =>
         request<{ readonly data: SessionCreateOutput }>(
           {

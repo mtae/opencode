@@ -1,5 +1,6 @@
 import { Instance } from "@opencode/core/instance/service"
 import { Session } from "@opencode/core/session"
+import { SessionSearch } from "@opencode/core/session/search"
 import { SessionStats } from "@opencode/core/session/stats"
 import { SessionTitle } from "@opencode/core/session/title"
 import { SessionTransfer } from "@opencode/core/session/transfer"
@@ -42,6 +43,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
     const instances = yield* Instance.Service
     const requireSession = (sessionID: Session.ID) =>
       session.get(sessionID).pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+    const search = yield* SessionSearch.Service
     const requireOwnedForm = Effect.fnUntraced(function* (sessionID: Form.Info["sessionID"], formID: Form.ID) {
       const form = yield* Form.Service
       const info = yield* form.get(formID).pipe(Effect.catchTag("Form.NotFoundError", () => missingForm(formID)))
@@ -96,6 +98,12 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
               Effect.mapError(() => new InvalidRequestError({ message: "Stats range must end after it starts" })),
             ),
           }
+        }),
+      )
+      .handle(
+        "session.search",
+        Effect.fn(function* (ctx) {
+          return yield* search.search(ctx.query)
         }),
       )
       .handle(
