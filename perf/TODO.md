@@ -38,8 +38,17 @@ The goal is to profile the CLI, TUI and local server across common workflows, an
 4. Delta/prefix history cache (#51497): now ~60 ms at 9 MB, so lower priority.
 - ~~Base64 regex~~, ~~`Provider.snapshot` 8×~~, ~~tool schema cache~~: fixed upstream.
 
+## Server-thread blocking in general (user ask, 2026-10-28)
+All SQLite work and request encoding run synchronously on the one server thread. One session's 9 MB step (~220 ms) stalls SSE, other sessions and every client for that long.
+- **Search:** moving to a worker (FTS agent, in progress).
+- **Next to measure:** event-loop stall histogram during a 9 MB tool loop with a second client streaming.
+- **Candidates:**
+  - read-only history load+decode in a worker pool (WAL allows parallel readers);
+  - request encode off-thread (the fragment cache makes it cheap anyway).
+- This is an upstream architecture change: open an issue first.
+
 ## Blockers
-- The pre-push hook needs Bun 1.4.4; 1.4.3 is installed. Ask the user before upgrading.
+- None. Bun 1.4.4 installed 2026-10-28.
 
 ## Possible upstream PR later: server step benchmark (flesh out)
 - A deterministic benchmark in-repo:

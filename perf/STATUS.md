@@ -3,7 +3,7 @@
 Updated: 2026-10-19. The owner session is the Claude Code desktop session in `C:\Users\aahlad\Documents\claude`. Read this file, then TODO.md, after any compaction.
 
 ## Where things are
-- **Worktree:** `C:\Users\aahlad\Documents\claude\opencode-perf`, branch `perf-harness` (origin/dev f36cda5bc8 plus timing hooks and harness), pushed to `mtae/opencode` (fork). Measurement only; never upstream.
+- **Worktree:** `C:\Users\aahlad\Documents\claude\opencode-perf`, branch `perf-harness` (origin/dev f36cda5bc8 plus timing hooks and harness), kept on the `mtae/opencode` fork (push after every commit). Measurement only; never upstream.
 - **Harness:** `packages/core/script/perf-bench/` (README there).
   - Run output must live outside the repo; `PERF_OUT` defaults to `$TMPDIR/opencode-perf-bench`. Run data inside the worktree made `opencode run` hang.
 - **DB snapshot:** `%TEMP%\claude\C--Users-aahlad-Documents-claude\31cf3071-6fa5-499a-88d2-56fae3447484\scratchpad\perf\snap.db`. It's 212 MB, a VACUUM INTO copy of the live DB. Never write to the live DB at `~/.local/share/opencode/opencode.db`.
@@ -25,7 +25,7 @@ Updated: 2026-10-19. The owner session is the Claude Code desktop session in `C:
 
 ## Side work
 - **Full-text session search (done 2026-10-28):**
-  - Worktree `C:\Users\aahlad\Documents\claude\opencode-fts`, branch `session-fts`: 5 commits on dev 86ce19d96e, local only.
+  - Worktree `C:\Users\aahlad\Documents\claude\opencode-fts`, branch `session-fts` on dev 86ce19d96e, kept on the `mtae/opencode` fork (no upstream PR without the user).
   - Details are in `FTS-NOTES.md` there (uncommitted).
   - The index lives in a separate `<db>-search` file, built lazily on the first search.
   - At 1x: 20 MB, a 3.9 s build, 4–60 ms queries. A common word at 10x takes ~0.5 s.
