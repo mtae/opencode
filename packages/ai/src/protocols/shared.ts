@@ -1,5 +1,5 @@
 import { Tool } from "@opencode/schema/tool"
-import { Effect, Option, Schema, SchemaGetter } from "effect"
+import { Effect, Option, Predicate, Schema, SchemaGetter, SchemaTransformation } from "effect"
 import { Headers, HttpClientRequest } from "effect/http"
 import { Media } from "../media.js"
 import {
@@ -19,19 +19,45 @@ import {
   type ToolEntry,
   type ToolResultPart,
 } from "../schema/index.js"
-import { Json, decodeJson, encodeJson } from "../utils/json.js"
+import { Json, decodeJson, encodeJson, encodeJsonBytes } from "../utils/json.js"
 import { isRecord } from "../utils/record.js"
-export { Json, decodeJson, encodeJson, isRecord }
+export { Json, decodeJson, encodeJson, encodeJsonBytes, isRecord }
 
 const isJson = Schema.is(Schema.Json)
 export const JsonObject = Schema.Record(Schema.String, Schema.Unknown)
 export const optionalArray = <const S extends Schema.Top>(schema: S) => Schema.optional(Schema.Array(schema))
 export const optionalNull = <const S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema))
+/** Optional provider field where an explicit `null` means absent, so decoding never yields `null`. */
+export const optionalNullish = <const S extends Schema.Top>(schema: S) =>
+  Schema.optional(Schema.NullOr(schema)).pipe(
+    Schema.decodeTo(
+      Schema.optional(Schema.toType(schema)),
+      SchemaTransformation.transformOptional({
+        decode: Option.filter(Predicate.isNotNullish),
+        encode: (value) => value,
+      }),
+    ),
+  )
 /** Optional field whose malformed value decodes to `undefined` instead of failing the enclosing struct. */
 export const lenient = <const S extends Schema.Top>(schema: S) =>
   Schema.optionalKey(
     Schema.UndefinedOr(schema).pipe(Schema.catchDecoding(() => Effect.succeed(Option.some(undefined)))),
   )
+/** A billed amount in USD; a malformed or negative one decodes as absent. */
+const billedAmount = lenient(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)))
+
+/** Billing an endpoint reports beside its token usage: `cost` is the USD it charged (OpenRouter, LiteLLM, OpenCode Zen). */
+export const ReportedBilling = Schema.Struct({
+  cost: billedAmount,
+})
+
+/** Reads `ReportedBilling` from a raw usage object, which provider metadata keeps as the endpoint sent it. */
+export const reportedBilling = (usage: unknown) =>
+  Option.match(Schema.decodeUnknownOption(ReportedBilling)(usage), {
+    onNone: () => ({}),
+    onSome: (billing) => ({ cost: billing.cost }),
+  })
+
 /**
  * Accepts stream frames that carry no `type`, alongside the typed event schema. Gateways inject such frames as
  * keep-alives, so they decode as an ignored event; one with an `error` still decodes as an error event.
@@ -244,14 +270,14 @@ export const mediaReference = (
 }
 
 /**
- * Lift a tool-result file into a `MediaPart`. Tool files carry either a data URL, an `http(s)` URL, or raw base64 in
+ * Lift a tool-result file into a `MediaPart`. Tool files carry either a data URL, a URI, or raw base64 in
  * `uri`; the declared `mime` wins over any data-URL prefix so tool authors control the type the model sees.
  */
 export const toolFileMedia = (item: Tool.FileContent): MediaPart => {
   const parsed = Media.parseDataUrl(item.uri)
   const asset = parsed
     ? Media.from({ ...parsed.source, mediaType: item.mime })
-    : /^https?:\/\//.test(item.uri)
+    : item.uri.includes("://")
       ? Media.url(item.uri, { mediaType: item.mime })
       : Media.base64(item.uri, item.mime)
   return Message.media(asset, { filename: item.name })
@@ -392,15 +418,14 @@ export const validateWith =
 /**
  * Build an HTTP POST with a JSON body. Sets `content-type: application/json`
  * automatically after caller-supplied headers so routes cannot accidentally
- * send JSON with a stale content type. The body is passed pre-encoded so
- * routes can choose between
- * `Schema.encodeSync(payload)` and `ProviderShared.encodeJson(payload)`.
+ * send JSON with a stale content type. The body is passed pre-encoded, as
+ * text or as UTF-8 bytes (`ProviderShared.encodeJsonBytes(payload)`).
  * A `zstd` or `gzip` encoding compresses the body and sets `content-encoding`;
  * it falls back to plain JSON when the runtime has no zlib.
  */
 export const jsonPost = (input: {
   readonly url: string
-  readonly body: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers?: Headers.Input
   readonly encoding?: RequestEncoding
 }) => {
@@ -409,7 +434,9 @@ export const jsonPost = (input: {
   if (!compressed)
     return HttpClientRequest.post(input.url).pipe(
       HttpClientRequest.setHeaders(headers),
-      HttpClientRequest.bodyText(input.body, "application/json"),
+      typeof input.body === "string"
+        ? HttpClientRequest.bodyText(input.body, "application/json")
+        : HttpClientRequest.bodyUint8Array(input.body, "application/json"),
     )
   return HttpClientRequest.post(input.url).pipe(
     HttpClientRequest.setHeaders(Headers.set(headers, "content-encoding", compressed.encoding)),
@@ -417,14 +444,14 @@ export const jsonPost = (input: {
   )
 }
 
-function compressBody(text: string, encoding: RequestEncoding | undefined) {
+function compressBody(body: string | Uint8Array<ArrayBuffer>, encoding: RequestEncoding | undefined) {
   if (encoding === undefined || encoding === "none") return undefined
   // Looked up at call time instead of imported: a runtime without node:zlib or its zstd export
   // (browsers, older Node, some workerd setups) sends plain JSON rather than failing to load this module.
   const zlib = globalThis.process?.getBuiltinModule?.("node:zlib")
   try {
-    const body = encoding === "zstd" ? zlib?.zstdCompressSync?.(text) : zlib?.gzipSync(text)
-    return body && { encoding, body }
+    const compressed = encoding === "zstd" ? zlib?.zstdCompressSync?.(body) : zlib?.gzipSync(body)
+    return compressed && { encoding, body: compressed }
   } catch {
     // Compression is an optimization, so a failure sends plain JSON instead of failing the request.
     return undefined

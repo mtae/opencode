@@ -57,7 +57,7 @@ export const defaultChain = (options: DefaultChainOptions): Effect.Effect<Creden
 
 const signRequest = (input: {
   readonly url: string
-  readonly body: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers: Headers.Headers
   readonly credentials: Credentials
   readonly service: string

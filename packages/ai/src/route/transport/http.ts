@@ -22,7 +22,7 @@ export type JsonRequestInput<Body> = TransportPrepareInput<Body>
 export interface JsonRequestParts<Body = unknown> {
   readonly url: string
   readonly jsonBody: Body | Record<string, unknown>
-  readonly bodyText: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers: Headers.Headers
 }
 
@@ -32,41 +32,39 @@ export interface HttpPrepared<Frame> {
   readonly middleware?: HttpMiddleware
 }
 
-const applyQuery = (url: string, query: Record<string, string> | undefined) => {
-  if (!query) return url
-  const next = new URL(url)
-  Object.entries(query).forEach(([key, value]) => next.searchParams.set(key, value))
-  return next.toString()
-}
-
-const bodyWithOverlay = <Body>(body: Body, request: LLMRequest, encodeBody: (body: Body) => string) =>
+const bodyWithOverlay = <Body>(
+  body: Body,
+  request: LLMRequest,
+  encodeBody: (body: Body) => string | Uint8Array<ArrayBuffer>,
+) =>
   Effect.gen(function* () {
-    if (request.http?.body === undefined) return { jsonBody: body, bodyText: encodeBody(body) }
+    if (request.http?.body === undefined) return { jsonBody: body, encoded: encodeBody(body) }
     if (ProviderShared.isRecord(body)) {
       const overlaid = mergeJsonRecords(body, request.http.body) ?? {}
-      return { jsonBody: overlaid, bodyText: ProviderShared.encodeJson(overlaid) }
+      return { jsonBody: overlaid, encoded: ProviderShared.encodeJsonBytes(overlaid) }
     }
     return yield* ProviderShared.invalidRequest("http.body can only overlay JSON object request bodies")
   })
 
 export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
   Effect.gen(function* () {
-    const url = applyQuery(
-      renderEndpoint(input.endpoint, { request: input.request, body: input.body }).toString(),
-      input.request.http?.query,
-    )
+    const endpoint = renderEndpoint(input.endpoint, { request: input.request, body: input.body })
+    if (input.request.http?.query) {
+      Object.entries(input.request.http.query).forEach(([key, value]) => endpoint.searchParams.set(key, value))
+    }
+    const url = endpoint.toString()
     const body = yield* bodyWithOverlay(input.body, input.request, input.encodeBody)
     const headers = yield* Auth.toEffect(input.auth)({
       request: input.request,
       method: "POST",
       url,
-      body: body.bodyText,
+      body: body.encoded,
       headers: Headers.fromInput({
         ...input.headers?.({ request: input.request }),
         ...input.request.http?.headers,
       }),
     })
-    return { url, jsonBody: body.jsonBody, bodyText: body.bodyText, headers }
+    return { url, jsonBody: body.jsonBody, body: body.encoded, headers }
   })
 
 export interface HttpJsonInput<_Body, Frame> {
@@ -87,7 +85,7 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
       const parts = yield* jsonRequestParts({ ...prepareInput })
       const request = ProviderShared.jsonPost({
         url: parts.url,
-        body: parts.bodyText,
+        body: parts.body,
         headers: parts.headers,
         encoding: prepareInput.request.http?.encoding,
       })
@@ -137,6 +135,7 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
         ),
         http,
         body: prepared.framing.body,
+        raw: prepared.framing.raw,
       }
     }),
 })

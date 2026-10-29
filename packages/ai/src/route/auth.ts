@@ -21,7 +21,7 @@ export interface AuthInput {
   readonly request: { readonly http?: HttpOptions }
   readonly method: "POST" | "GET" | "PUT" | "DELETE"
   readonly url: string
-  readonly body: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers: Headers.Headers
 }
 
@@ -39,9 +39,6 @@ export interface Definition {
   readonly orElse: (that: Definition) => Definition
   readonly pipe: <A>(f: (self: Definition) => A) => A
 }
-
-export const isAuth = (input: unknown): input is Definition =>
-  typeof input === "object" && input !== null && "apply" in input && typeof input.apply === "function"
 
 const credential = (load: Effect.Effect<Redacted.Redacted, CredentialError>): Credential => {
   const self: Credential = {
@@ -124,8 +121,6 @@ export function bearer(source: Secret | Credential) {
   return credentialInput(source).bearer()
 }
 
-export const apiKey = bearer
-
 export function header(name: string): (source: Secret | Credential) => Definition
 export function header(name: string, source: Secret | Credential): Definition
 export function header(name: string, source?: Secret | Credential) {
@@ -144,7 +139,7 @@ export function bearerHeader(name: string, source?: Secret | Credential) {
   return render(source)
 }
 
-/** `Authorization: <scheme> <secret>` for providers whose scheme is not `Bearer`, such as fal's `Key`. */
+/** `Authorization: <scheme> <secret>` for providers whose scheme is not `Bearer`, such as Deepgram's `Token`. */
 export function scheme(name: string): (source: Secret | Credential) => Definition
 export function scheme(name: string, source: Secret | Credential): Definition
 export function scheme(name: string, source?: Secret | Credential) {
