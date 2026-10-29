@@ -1,5 +1,6 @@
 import type { JSX } from "solid-js"
 import type { IconName } from "./icon-name.js"
+import type { OpenCodeClient, SessionInfo } from "@opencode/client/promise"
 import { Registry } from "./core.js"
 import type { SessionRef, MountedSession, SessionScreen } from "./host-apis.js"
 
@@ -569,6 +570,32 @@ export interface LinkHandler {
   exists?(link: Link): boolean | Promise<boolean>
 }
 
+/** What the host asks a session search source for. */
+export interface SessionSearchInput {
+  /** The trimmed text the user typed. Never empty. */
+  readonly query: string
+  /** The API client of the server whose sessions are searched. */
+  readonly client: OpenCodeClient
+  /** Aborts when the query changes or the search closes. Pass it to every request. */
+  readonly signal: AbortSignal
+}
+
+/**
+ * A source of extra matches for the session search, such as a full-text index. The host shows its own matches first and
+ * adds a source's sessions as they arrive, so a source that is slow, offline or unsupported costs nothing.
+ */
+export interface SessionSearchSource {
+  /** The source's id, for debugging. */
+  readonly id: string
+  /**
+   * Sessions that match the query. Matches are added by session id, not filtered again by title.
+   *
+   * @param input - The query, the server's client and the abort signal.
+   * @returns The matching sessions. A rejection is treated as no matches.
+   */
+  search(input: SessionSearchInput): Promise<readonly SessionInfo[]>
+}
+
 /** A pill in the titlebar or the tabs footer; the label shows on hover. */
 export interface TitlebarItem {
   /** The item's id; the host keeps the pill's element while the id stays. */
@@ -794,6 +821,19 @@ export const Server = Registry.define<Server>("server")
  * ```
  */
 export const LinkHandler = Registry.define<LinkHandler>("link-handler")
+
+/**
+ * The registry of sources that add matches to the Home session search.
+ *
+ * @example
+ * ```ts
+ * ctx.add(SessionSearch, {
+ *   id: "full-text",
+ *   search: (input) => input.client.session.list({ search: input.query }, { signal: input.signal }).then((r) => r.data),
+ * })
+ * ```
+ */
+export const SessionSearch = Registry.define<SessionSearchSource>("session-search")
 
 /**
  * The registry of titlebar pills.
