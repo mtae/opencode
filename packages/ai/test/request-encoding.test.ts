@@ -99,5 +99,7 @@ describe("encodeJsonBytes", () => {
     encodes({ model: "m", messages: [{ role: "user", content: "first ’", at: new Date(1) }] })
     encodes({ model: "m", messages: [{ role: "user", content: "first ’", skipped: undefined }, 1, undefined] })
     encodes({ model: "m", messages: [{ role: "user", content: "first ’" }, 1, null] })
+    encodes({ model: "m", messages: [[5, 1]] })
+    encodes({ model: "m", messages: [[, 1]] })
   })
 })

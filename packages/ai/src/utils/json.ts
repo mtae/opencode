@@ -90,7 +90,13 @@ const sameJson = (a: unknown, b: unknown): boolean => {
   if (typeof a !== "object" || a === null || typeof b !== "object" || b === null) return Object.is(a, b)
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
-    return a.every((item, index) => !omitted(item) && !omitted(b[index]) && sameJson(item, b[index]))
+    // `every` skips holes, which JSON encodes as null, so count the elements it visited.
+    let visited = 0
+    const same = a.every((item, index) => {
+      visited++
+      return !omitted(item) && !omitted(b[index]) && sameJson(item, b[index])
+    })
+    return same && visited === a.length
   }
   if (!isPlainObject(a) || !isPlainObject(b)) return false
   const left = Object.keys(a).filter((key) => !omitted(a[key]))
