@@ -104,7 +104,7 @@ import { CommandPaletteDialog } from "./component/command-palette"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "./context/keymap"
 
 import { DialogVariant } from "./component/dialog-variant"
-import { destroyRenderer, setTerminalTitle } from "./util/renderer"
+import { destroyRenderer, setTerminalTitle, waitForThemeMode } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
 import { AttentionProvider } from "./context/attention"
 import { StorageProvider, useStorage } from "./context/storage"
@@ -314,7 +314,12 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       )
       renderer.once("destroy", () => shutdown.openUnsafe())
       yield* Effect.tryPromise(async () => {
-        const mode = handoff?.mode ?? (await renderer.waitForThemeMode(1000)) ?? "dark"
+        const mode =
+          handoff?.mode ??
+          (await (process.env.OPENCODE_DRIVE
+            ? renderer.waitForThemeMode(1000)
+            : waitForThemeMode(renderer, 1000, (data) => process.stdout.write(data)))) ??
+          "dark"
         if (renderer.isDestroyed) return
 
         await render(() => {
