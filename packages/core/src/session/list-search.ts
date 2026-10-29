@@ -11,7 +11,8 @@ export type Provider = (filter: SessionStore.Filter, query: string) => Effect.Ef
 export interface Interface {
   /**
    * Adds a provider until the Scope closes. A reloading plugin registers its new provider before the old Scope
-   * closes, so the newest registration for an id wins and the id stays until every registration is released.
+   * closes, and every location registers its own, so the newest registration still held for an id wins. Releasing
+   * it hands the id back to the one before, so a closed location never leaves its provider behind.
    */
   readonly register: (id: string, provider: Provider) => Effect.Effect<void, never, Scope.Scope>
   /** The union of every provider's matches, or undefined when none is registered, so list matches titles only. */
@@ -21,25 +22,27 @@ export interface Interface {
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionListSearch") {}
 
 const layer = Layer.sync(Service, () => {
-  const providers = new Map<string, { provider: Provider; count: number }>()
+  // Registrations per id, oldest first. Each is its own object so a provider registered twice releases separately.
+  const providers = new Map<string, Array<{ readonly provider: Provider }>>()
 
   const register = (id: string, provider: Provider) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        providers.set(id, { provider, count: (providers.get(id)?.count ?? 0) + 1 })
+        const registration = { provider }
+        providers.set(id, [...(providers.get(id) ?? []), registration])
+        return registration
       }),
-      () =>
+      (registration) =>
         Effect.sync(() => {
-          const entry = providers.get(id)
-          if (!entry) return
-          if (entry.count <= 1) providers.delete(id)
-          else providers.set(id, { ...entry, count: entry.count - 1 })
+          const held = (providers.get(id) ?? []).filter((entry) => entry !== registration)
+          if (held.length === 0) providers.delete(id)
+          else providers.set(id, held)
         }),
-    )
+    ).pipe(Effect.asVoid)
 
   const matches = Effect.fn("SessionListSearch.matches")(function* (filter: SessionStore.Filter, query: string) {
     if (providers.size === 0) return undefined
-    const found = yield* Effect.forEach([...providers.values()], (entry) => entry.provider(filter, query), {
+    const found = yield* Effect.forEach([...providers.values()], (held) => held.at(-1)!.provider(filter, query), {
       concurrency: "unbounded",
     })
     return [...new Set(found.flat())]

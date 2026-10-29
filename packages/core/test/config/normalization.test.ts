@@ -116,6 +116,12 @@ describe("ConfigNormalize", () => {
     expect(Duration.toMillis(info.warming.duration ?? Duration.zero)).toBe(1_800_000)
   })
 
+  test("keeps the session search selection", () => {
+    expect(decoded({ search: { mode: "titles" } }).search).toEqual({ mode: "titles" })
+    expect(decoded({ search: false }).search).toBe(false)
+    expect(decoded({}).search).toBeUndefined()
+  })
+
   test("preserves arbitrary JSON-round-tripped native configuration", () => {
     const result = Effect.runSync(
       Arbitrary.checkEffect(

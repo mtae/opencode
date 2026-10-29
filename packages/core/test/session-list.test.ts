@@ -16,7 +16,7 @@ import { SessionStore } from "@opencode/core/session/store"
 import { SessionEvent } from "@opencode/schema/session-event"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Effect, Schema } from "effect"
+import { Effect, Exit, Schema, Scope } from "effect"
 import { testEffect } from "./lib/effect"
 import { globalProjectNode } from "./lib/project"
 
@@ -112,6 +112,22 @@ describe("Session.list", () => {
       const { byTitle } = yield* handshakes
       expect(yield* searchWith(undefined)).toEqual([byTitle])
     }),
+  )
+
+  it.effect("falls back to the older provider when the newest registration is released", () =>
+    Effect.gen(function* () {
+      const { byMessage, byTitle } = yield* handshakes
+      const listSearch = yield* SessionListSearch.Service
+      const matching = (ids: Session.ID[]): SessionListSearch.Provider => () => Effect.succeed(ids)
+      yield* listSearch.register("opencode.session-search", matching([byMessage]))
+      const newest = yield* Scope.make()
+      yield* listSearch.register("opencode.session-search", matching([])).pipe(Scope.provide(newest))
+
+      const search = (yield* Session.Service).list({ directory: project.directory, search: "handshake" })
+      expect((yield* search).data.map((item) => item.id)).toEqual([byTitle])
+      yield* Scope.close(newest, Exit.void)
+      expect((yield* search).data.map((item) => item.id).toSorted()).toEqual([byMessage, byTitle].toSorted())
+    }).pipe(Effect.scoped),
   )
 
   it.effect("returns 50 sessions when no limit is given", () =>
