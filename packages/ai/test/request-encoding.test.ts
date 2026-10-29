@@ -82,4 +82,22 @@ describe("encodeJsonBytes", () => {
     encodes("text")
     encodes({ toJSON: () => ({ replaced: [1] }) })
   })
+
+  test("reuses earlier steps only where the history is unchanged", () => {
+    const history = [
+      { role: "user", content: "first ’" },
+      { role: "assistant", content: [{ type: "text", text: "reply" }] },
+    ]
+    encodes({ model: "m", messages: history })
+    encodes({ model: "m", messages: [...structuredClone(history), { role: "user", content: "next" }] })
+    encodes({ model: "m", messages: [history[0], { role: "assistant", content: [{ type: "text", text: "edited" }] }] })
+    encodes({
+      model: "m",
+      messages: [history[0], { role: "assistant", content: [{ type: "text", text: "reply", extra: 1 }] }],
+    })
+    encodes({ model: "m", messages: [{ role: "user", content: "first ’", at: new Date(0) }] })
+    encodes({ model: "m", messages: [{ role: "user", content: "first ’", at: new Date(1) }] })
+    encodes({ model: "m", messages: [{ role: "user", content: "first ’", skipped: undefined }, 1, undefined] })
+    encodes({ model: "m", messages: [{ role: "user", content: "first ’" }, 1, null] })
+  })
 })
