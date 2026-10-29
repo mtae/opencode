@@ -414,11 +414,17 @@ export const layer = (options?: Options) =>
           const text = (yield* fs.readFileStringSafe(filepath)) ?? "{}\n"
           const updated = yield* Effect.try({
             try: () =>
-              applyEdits(
+              (["shell", "search"] as const).reduce(
+                (current, key) =>
+                  patch[key] === undefined
+                    ? current
+                    : applyEdits(
+                        current,
+                        modify(current, [key], patch[key] ?? undefined, {
+                          formattingOptions: { tabSize: 2, insertSpaces: true },
+                        }),
+                      ),
                 text,
-                modify(text, ["shell"], patch.shell ?? undefined, {
-                  formattingOptions: { tabSize: 2, insertSpaces: true },
-                }),
               ),
             catch: (cause) => new FSUtil.FileSystemError({ method: "config.update", cause }),
           })

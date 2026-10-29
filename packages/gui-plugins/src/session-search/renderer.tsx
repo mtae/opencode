@@ -7,8 +7,9 @@ const LIMIT = 50
 
 /**
  * Adds server matches to the Home session search. The server matches message content when `GET /api/session` has a
- * `search`, so this asks for that and gets title matches only from a server without full-text search. Home applies
- * these after its own results and treats a failure as no matches. Off in the options, it never asks.
+ * `search`, so this asks for that and gets title matches only from a server without full-text search or with its
+ * `search` config set to titles. Home applies these after its own results and treats a failure as no matches. Off in
+ * the options, it never asks.
  */
 const setup: Plugin.Setup<typeof SessionSearchDefinition> = (ctx) => {
   const options = ctx.stores.options
@@ -24,11 +25,7 @@ const setup: Plugin.Setup<typeof SessionSearchDefinition> = (ctx) => {
         { signal: input.signal },
       )
 
-      const query = input.query.toLowerCase()
-
-      return options.value.mode === "content"
-        ? result.data
-        : result.data.filter((session) => (session.title ?? "").toLowerCase().includes(query))
+      return result.data
     },
   })
 
