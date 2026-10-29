@@ -618,11 +618,24 @@ export const make = Effect.fn("SessionSearchIndex.make")(function* (options: {
   })
 
   // The newest matches first, in pages, keeping those in Sessions the filters allow and before
-  // any revert boundary, until enough are kept or enough were read.
-  const candidates = (query: Query, input: Input) => {
+  // any revert boundary, until enough are kept or enough were read. With filters the Sessions they
+  // allow are known up front, so matches in other Sessions never spend the read budget.
+  const candidates = Effect.fn("SessionSearchIndex.candidates")(function* (query: Query, input: Input) {
     const sessions = new Map<Session.ID, { updated: number; boundary: number | null } | undefined>()
     const conditions = SessionStore.filters(input)
     const boundary = alias(SessionMessageTable, "boundary")
+    const eligible =
+      conditions.length === 0
+        ? undefined
+        : JSON.stringify(
+            (yield* app
+              .select({ id: SessionTable.id })
+              .from(SessionTable)
+              .where(and(...conditions))
+              .all()
+              .pipe(Effect.orDie)).map((row) => row.id),
+          )
+    if (eligible === "[]") return { found: [] as Candidate[], sessions }
     const next = (
       before: number | undefined,
       kept: Candidate[],
@@ -638,6 +651,7 @@ export const make = Effect.fn("SessionSearchIndex.make")(function* (options: {
             FROM session_search_fts f
             JOIN session_search_doc d ON d.id = f.rowid
             WHERE session_search_fts MATCH ${query.match} ${before === undefined ? sql`` : sql`AND f.rowid < ${before}`}
+              ${eligible === undefined ? sql`` : sql`AND d.session_id IN (SELECT value FROM json_each(${eligible}))`}
             ORDER BY f.rowid DESC
             LIMIT ${size}
           `,
@@ -679,8 +693,8 @@ export const make = Effect.fn("SessionSearchIndex.make")(function* (options: {
           Math.min(MaxScanned - total, Math.max(Candidates, Math.ceil(((Candidates - found.length) / share) * 2))),
         )
       })
-    return next(undefined, [], 0, Candidates).pipe(Effect.map((found) => ({ found, sessions })))
-  }
+    return { found: yield* next(undefined, [], 0, Candidates), sessions }
+  })
 
   return Effect.fn("SessionSearchIndex.search")(function* (input: Input) {
     const limit = input.limit ?? 50

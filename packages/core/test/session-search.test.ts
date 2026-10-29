@@ -38,14 +38,14 @@ const seedProject = Effect.gen(function* () {
   yield* database.db.insert(ProjectTable).values({ id: Project.ID.global, worktree: directory, sandboxes: [] }).run()
 })
 
-const createSession = (id: string, title: string, parentID?: Session.ID) =>
+const createSession = (id: string, title: string, parentID?: Session.ID, where = directory) =>
   Effect.gen(function* () {
     const bus = yield* Bus.Service
     const sessionID = Session.ID.make(id)
     yield* bus.publish(SessionEvent.Created, {
       sessionID,
       projectID: Project.ID.global,
-      location: { directory },
+      location: { directory: where },
       parentID,
       slug: id,
       title,
@@ -343,6 +343,30 @@ describe("SessionSearch", () => {
       expect(ids(yield* search("capybara", { parentID: parent }))).toEqual(["ses_child"])
       expect(ids(yield* search("capybara", { directory: AbsolutePath.make("/elsewhere") }))).toEqual([])
       expect(ids(yield* search("capybara", { limit: 1 }))).toHaveLength(1)
+    }),
+  )
+
+  it.effect("finds an older match in scope behind more newer matches out of scope than one search reads", () =>
+    Effect.gen(function* () {
+      yield* seedProject
+      const target = yield* createSession("ses_target", "Target")
+      yield* prompt(target, "msg_target", "capybara uniquetarget")
+      expect(ids(yield* search("capybara", { directory }))).toEqual(["ses_target"])
+
+      const other = yield* createSession("ses_other", "Other", undefined, AbsolutePath.make("/other"))
+      yield* prompt(other, "msg_other", "capybara elsewhere")
+      const database = yield* Database.Service
+      const copies = 10_100
+      yield* database.db.run(sql`
+        INSERT INTO session_message (id, session_id, seq, time_created, time_updated, type, data)
+        SELECT 'msg_bulk' || c.n, m.session_id, m.seq + c.n, m.time_created, m.time_updated, m.type, m.data
+        FROM session_message m,
+          (WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < ${copies}) SELECT n FROM c) c
+        WHERE m.id = 'msg_other'`)
+      yield* Bus.reserveSequence(database.db, other, (yield* Bus.latestSequence(database.db, other)) + copies)
+
+      expect(ids(yield* search("capybara", { directory })).toSorted()).toEqual(["ses_target"])
+      expect(ids(yield* search("capybara", { directory: AbsolutePath.make("/other") }))).toEqual(["ses_other"])
     }),
   )
 })
