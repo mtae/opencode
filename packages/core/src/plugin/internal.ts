@@ -62,6 +62,7 @@ import { Schedule } from "../schedule.js"
 import { Session } from "../session.js"
 import { SessionCompaction } from "../session/compaction.js"
 import { SessionInstructions } from "../session/instructions.js"
+import { SessionListSearch } from "../session/list-search.js"
 import { SubagentJob } from "../session/subagent-job.js"
 import { Shell } from "../shell.js"
 import { ShellSelect } from "../shell/select.js"
@@ -96,6 +97,8 @@ import { CommandPlugin } from "./command.js"
 import { IdentityPlugin } from "./identity.js"
 import { PlanPlugin } from "./plan.js"
 import { GoalPlugin } from "./goal.js"
+import { SessionSearch } from "./session-search/search.js"
+import { SessionSearchPlugin } from "./session-search.js"
 import { ModelsDevPlugin } from "./models-dev.js"
 import { McpCodeModeDefaultsPlugin } from "./mcp-codemode-defaults.js"
 import { ProviderPlugins } from "./provider.js"
@@ -149,6 +152,8 @@ const services = [
   Session.Service,
   SessionCompaction.Service,
   SessionInstructions.Service,
+  SessionListSearch.Service,
+  SessionSearch.Service,
   SubagentJob.Service,
   Shell.Service,
   ShellSelect.Service,
@@ -204,6 +209,8 @@ export const requirements = LayerNode.group([
   Session.node,
   SessionCompaction.node,
   SessionInstructions.node,
+  SessionListSearch.node,
+  SessionSearch.node,
   SubagentJob.node,
   Shell.node,
   ShellSelect.node,
@@ -231,6 +238,7 @@ const pre = [
   PlanPlugin.Plugin,
   CommandPlugin.Plugin,
   GoalPlugin.Plugin,
+  SessionSearchPlugin.Plugin,
   SkillPlugin.Plugin,
   VcsHgPlugin.Plugin,
   ModelsDevPlugin,

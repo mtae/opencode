@@ -7,6 +7,10 @@ import { Project } from "@opencode/core/project"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { SessionListSearch } from "@opencode/core/session/list-search"
+import { SessionSearchPlugin } from "@opencode/core/plugin/session-search"
+import { SessionSearch } from "@opencode/core/plugin/session-search/search"
+import type { ConfigSearch } from "@opencode/schema/config/search"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionStore } from "@opencode/core/session/store"
 import { SessionEvent } from "@opencode/schema/session-event"
@@ -18,7 +22,15 @@ import { globalProjectNode } from "./lib/project"
 
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionSearch.node,
+      SessionListSearch.node,
+      Session.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       Project.node.replace(globalProjectNode),
@@ -54,24 +66,51 @@ describe("Session.list", () => {
     }),
   )
 
-  it.effect("finds sessions by their messages as well as their titles when searching", () =>
+  // Two Sessions match "handshake": one by a message, one by its title.
+  const handshakes = Effect.gen(function* () {
+    const session = yield* Session.Service
+    const bus = yield* Bus.Service
+    const byMessage = yield* session.create({ location: project, title: "untitled" })
+    const byTitle = yield* session.create({ location: project, title: "handshake notes" })
+    yield* session.create({ location: project, title: "unrelated" })
+    const inboxID = SessionMessage.ID.make("msg_handshake")
+    yield* bus.publish(SessionEvent.InboxEnqueued, {
+      sessionID: byMessage.id,
+      inboxID,
+      item: { type: "user", payload: { text: "the websocket handshake failed" }, delivery: "steer" },
+    })
+    yield* bus.publish(SessionEvent.InboxDelivered, { sessionID: byMessage.id, inboxID })
+    return { byMessage: byMessage.id, byTitle: byTitle.id }
+  })
+
+  const searchWith = (mode: ConfigSearch.Mode | undefined) =>
     Effect.gen(function* () {
-      const session = yield* Session.Service
-      const bus = yield* Bus.Service
-      const byMessage = yield* session.create({ location: project, title: "untitled" })
-      const byTitle = yield* session.create({ location: project, title: "handshake notes" })
-      yield* session.create({ location: project, title: "unrelated" })
-      const inboxID = SessionMessage.ID.make("msg_handshake")
-      yield* bus.publish(SessionEvent.InboxEnqueued, {
-        sessionID: byMessage.id,
-        inboxID,
-        item: { type: "user", payload: { text: "the websocket handshake failed" }, delivery: "steer" },
-      })
-      yield* bus.publish(SessionEvent.InboxDelivered, { sessionID: byMessage.id, inboxID })
+      if (mode) {
+        const provider = SessionSearchPlugin.listProvider(yield* SessionSearch.Service, () => mode)
+        yield* (yield* SessionListSearch.Service).register("opencode.session-search", provider)
+      }
+      const found = yield* (yield* Session.Service).list({ directory: project.directory, search: "handshake" })
+      return found.data.map((item) => item.id).toSorted()
+    }).pipe(Effect.scoped)
 
-      const found = yield* session.list({ directory: project.directory, search: "handshake" })
+  it.effect("finds sessions by their messages as well as their titles in content mode", () =>
+    Effect.gen(function* () {
+      const { byMessage, byTitle } = yield* handshakes
+      expect(yield* searchWith("content")).toEqual([byMessage, byTitle].toSorted())
+    }),
+  )
 
-      expect(found.data.map((item) => item.id).toSorted()).toEqual([byMessage.id, byTitle.id].toSorted())
+  it.effect("matches titles only in titles mode", () =>
+    Effect.gen(function* () {
+      const { byTitle } = yield* handshakes
+      expect(yield* searchWith("titles")).toEqual([byTitle])
+    }),
+  )
+
+  it.effect("matches titles only without the session search plugin", () =>
+    Effect.gen(function* () {
+      const { byTitle } = yield* handshakes
+      expect(yield* searchWith(undefined)).toEqual([byTitle])
     }),
   )
 

@@ -6,9 +6,9 @@ import { Deferred, Duration, Effect, Exit, Option, Schema, Scope } from "effect"
 import type { Session } from "@opencode/schema/session"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import type { Fragment, Match, Source } from "@opencode/schema/session-search"
-import type { Database } from "../database/database.js"
-import { SessionMessageTable, SessionTable } from "./sql.js"
-import { SessionStore } from "./store.js"
+import type { Database } from "../../database/database.js"
+import { SessionMessageTable, SessionTable } from "../../session/sql.js"
+import { SessionStore } from "../../session/store.js"
 
 /** Bump to rebuild every Session's documents after changing what gets extracted. */
 const Version = 1

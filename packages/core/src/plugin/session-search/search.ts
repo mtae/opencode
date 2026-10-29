@@ -5,12 +5,12 @@ import { Context, Effect, Layer, Schema, Scope } from "effect"
 import type { Worker } from "node:worker_threads"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import type { Result } from "@opencode/schema/session-search"
-import { Database } from "../database/database.js"
-import { fromRow } from "./info.js"
+import { Database } from "../../database/database.js"
+import { fromRow } from "../../session/info.js"
 import { SessionSearchIndex } from "./search-index.js"
 import type { Reply, Request } from "./search-worker.js"
-import { SessionTable } from "./sql.js"
-import { SessionStore } from "./store.js"
+import { SessionTable } from "../../session/sql.js"
+import { SessionStore } from "../../session/store.js"
 
 export const extract = SessionSearchIndex.extract
 export const parse = SessionSearchIndex.parse
