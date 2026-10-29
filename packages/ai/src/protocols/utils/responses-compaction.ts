@@ -120,7 +120,7 @@ export const make = (
     const response = yield* executor.execute(
       ProviderShared.jsonPost({
         url: parts.url,
-        body: parts.bodyText,
+        body: parts.body,
         headers: parts.headers,
         encoding: request.http?.encoding,
       }),

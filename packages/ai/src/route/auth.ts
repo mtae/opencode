@@ -21,7 +21,7 @@ export interface AuthInput {
   readonly request: { readonly http?: HttpOptions }
   readonly method: "POST" | "GET" | "PUT" | "DELETE"
   readonly url: string
-  readonly body: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers: Headers.Headers
 }
 

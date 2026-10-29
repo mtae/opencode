@@ -1,9 +1,10 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { gunzipSync, zstdDecompressSync } from "node:zlib"
 import { Effect } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { ai, type RequestEncoding } from "../src/effect.js"
 import { LLMClient } from "../src/route.js"
+import { encodeJsonBytes } from "../src/utils/json.js"
 import { configure } from "../src/providers/openai.js"
 import { dynamicResponse } from "./lib/http.js"
 import { deltaChunk, finishChunk } from "./lib/openai-chunks.js"
@@ -54,4 +55,44 @@ describe("HTTP request encoding", () => {
       }
     }),
   )
+})
+
+describe("encodeJsonBytes", () => {
+  const encodes = (value: unknown) =>
+    expect(new TextDecoder().decode(encodeJsonBytes(value))).toBe(JSON.stringify(value))
+
+  test("matches JSON.stringify for request bodies", () => {
+    encodes({
+      model: "m",
+      skipped: undefined,
+      messages: [
+        { role: "user", content: "plain" },
+        { role: "assistant", content: "curly ’ and 😀" },
+      ],
+      empty: [],
+      holes: [undefined, () => 1, null, 0],
+      nested: { list: [1, "—"] },
+      stream: true,
+    })
+    encodes({})
+  })
+
+  test("is byte-identical to the UTF-8 of JSON.stringify for lone surrogates and control characters", () => {
+    const value = {
+      model: "m",
+      messages: [
+        { role: "user", content: "lone high \ud800 and low \udfff, pair 😀, nul \u0000, bell \u0007, line sep" },
+        { role: "tool", content: "\ud83d" },
+        { role: "user", content: ["é", "日本語", "😀".repeat(3)] },
+      ],
+    }
+    const expected = new TextEncoder().encode(JSON.stringify(value))
+    expect(Buffer.from(encodeJsonBytes(value)).equals(Buffer.from(expected))).toBe(true)
+  })
+
+  test("matches JSON.stringify for values that are not plain objects", () => {
+    encodes(["a", "’"])
+    encodes("text")
+    encodes({ toJSON: () => ({ replaced: [1] }) })
+  })
 })

@@ -38,7 +38,7 @@ export interface TransportPrepareInput<Body> {
   readonly request: LLMRequest
   readonly endpoint: Endpoint.Definition<Body>
   readonly auth: Auth.Definition
-  readonly encodeBody: (body: Body) => string
+  readonly encodeBody: (body: Body) => string | Uint8Array<ArrayBuffer>
   readonly headers?: (input: { readonly request: LLMRequest }) => Record<string, string>
   readonly middleware?: HttpMiddleware
   readonly webSocket?: WebSocketChannelExecutor
