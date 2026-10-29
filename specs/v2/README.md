@@ -19,10 +19,11 @@ Generated clients follow the assembled public `HttpApi`. GitHub issues own activ
 
 ## Current Contracts
 
-| Document                | Job                                                                                     |
-| ----------------------- | --------------------------------------------------------------------------------------- |
-| [Session](./session.md) | Explain prompt admission, execution, instructions, compaction, and recovery boundaries. |
-| [Tools](./tools.md)     | Explain tool construction, registration, execution, and outcome laws.                   |
+| Document                              | Job                                                                                                                    |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| [Session](./session.md)               | Explain prompt admission, execution, instructions, compaction, and recovery boundaries.                                |
+| [Session search](./session-search.md) | Explain full-text session search: the index, the list hook, the config, the desktop merge, installability, and limits. |
+| [Tools](./tools.md)                   | Explain tool construction, registration, execution, and outcome laws.                                                  |
 
 ## Decision Records
 
