@@ -1,7 +1,7 @@
 export * as Session from "./session.js"
 export * from "./session/schema.js"
 
-import { Cause, DateTime, Effect, Layer, Context, Option, Stream } from "effect"
+import { DateTime, Effect, Layer, Context, Option, Stream } from "effect"
 import { LLMClient } from "@opencode/ai/effect"
 import { ListAnchor, ListCursor, ListFilter } from "@opencode/schema/session"
 import { and, desc, eq } from "drizzle-orm"
@@ -25,7 +25,7 @@ import { App } from "./app.js"
 import { Slug } from "./util/slug.js"
 import path from "path"
 import { SessionRunner } from "./session/runner/index.js"
-import { SessionSearch } from "./session/search.js"
+import { SessionListSearch } from "./session/list-search.js"
 import { SessionStore } from "./session/store.js"
 import { SessionExecution } from "./session/execution.js"
 import {
@@ -86,7 +86,6 @@ export type ListInput = SessionStore.ListInput
 const DefaultListLimit = 50
 // How many full-text matches list's `search` also accepts. A cursor re-runs the search, so pages agree as long as
 // a search finds no more Sessions than this.
-const ListSearchMatches = 500
 
 type CreateBaseInput = {
   id?: SessionSchema.ID
@@ -278,7 +277,7 @@ const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const transport = yield* SessionModelTransport.Service
     const store = yield* SessionStore.Service
-    const search = yield* SessionSearch.Service
+    const listSearch = yield* SessionListSearch.Service
     const instances = yield* Instance.Service
     const moves = yield* SessionMove.Service
     const jobs = yield* Job.Service
@@ -415,17 +414,8 @@ const layer = Layer.effect(
             ? input
             : yield* ListCursor.parse(input.cursor).pipe(Effect.mapError(() => new InvalidListCursorError()))
         // Clients that only know list's title filter, such as the mobile app, also find Sessions by their messages.
-        const matches = filter.search?.trim()
-          ? yield* search.search({ ...filter, query: filter.search, limit: ListSearchMatches }).pipe(
-              Effect.map((found) => found.data.map((result) => result.session.id)),
-              // Superseded by another search, or the index failed: match titles only, as before.
-              Effect.catchTag("SessionSearch.SupersededError", () => Effect.succeed([])),
-              Effect.catchCauseIf(
-                (cause) => !Cause.hasInterrupts(cause),
-                (cause) => Effect.logWarning("Session list search fell back to titles", cause).pipe(Effect.as([])),
-              ),
-            )
-          : undefined
+        const query = filter.search?.trim()
+        const matches = query ? yield* listSearch.matches(filter, query) : undefined
         const data = yield* store.list({ ...filter, matches, limit: input.limit ?? DefaultListLimit })
         const first = data[0]
         const last = data.at(-1)
@@ -572,7 +562,7 @@ export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.gl
     SessionModelTransport.node,
     llmClient,
     SessionStore.node,
-    SessionSearch.node,
+    SessionListSearch.node,
     Instance.node,
     SessionInbox.node,
     SessionMove.node,

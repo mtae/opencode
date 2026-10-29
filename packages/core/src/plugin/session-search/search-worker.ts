@@ -2,7 +2,7 @@ import { parentPort, workerData } from "node:worker_threads"
 import { sqliteLayer } from "#sqlite"
 import { Cause, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { sql } from "drizzle-orm"
-import { EffectDrizzleSqlite } from "../database/drizzle.js"
+import { EffectDrizzleSqlite } from "../../database/drizzle.js"
 import { SessionSearchIndex } from "./search-index.js"
 
 export const Data = Schema.Struct({ path: Schema.String })
