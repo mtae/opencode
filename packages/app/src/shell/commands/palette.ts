@@ -1,7 +1,8 @@
 import { abort } from "@opencode/util/abort"
 import { getFilename } from "@opencode/util/path"
 import type { Project } from "@/runtime/server/types"
-import type { OpenCodeClient, SessionInfo, SessionSearchMatch } from "@opencode/client/promise"
+import type { OpenCodeClient, SessionInfo } from "@opencode/client/promise"
+import { SessionSearch } from "@opencode/schema/session-search"
 import { useDialog } from "@opencode/ui/context/dialog"
 import { useQueryClient } from "@tanstack/solid-query"
 import { createMemo, onCleanup } from "solid-js"
@@ -239,10 +240,11 @@ type SessionSearchState = {
   abort?: AbortController
 }
 
+type SessionSearchMatch = typeof SessionSearch.Match.Encoded
 type SessionHit = { session: SessionInfo; match?: SessionSearchMatch }
 
 /** Searches Session titles and conversations for a query; without one, lists recent Sessions. */
-export function loadServerSessions(api: Pick<OpenCodeClient, "session">, search: string, signal: AbortSignal) {
+export function loadServerSessions(api: Pick<OpenCodeClient, "session" | "rpc">, search: string, signal: AbortSignal) {
   const list = () =>
     api.session
       .list({ parentID: null, search, archived: false, limit: 50 }, { signal })
@@ -250,10 +252,16 @@ export function loadServerSessions(api: Pick<OpenCodeClient, "session">, search:
 
   if (!search) return list()
 
-  // Servers without the experimental content search still match titles.
-  return api.session
+  // Servers without the session-search plugin still match titles.
+  return api
+    .rpc(SessionSearch.Definition)
     .search({ parentID: null, query: search, archived: false, limit: 50 }, { signal })
-    .then((result): SessionHit[] => result.data, list)
+    .then(
+      (result) =>
+        // The RPC's encoded Session is the generated SessionInfo with readonly metadata.
+        result.data.map((hit): SessionHit => ({ session: hit.session as SessionInfo, match: hit.match })),
+      list,
+    )
 }
 
 /** The matched excerpt, starting shortly before the first highlighted term so it survives truncation. */

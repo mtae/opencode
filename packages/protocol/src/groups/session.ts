@@ -2,7 +2,6 @@ import { SessionMessage } from "@opencode/schema/session-message"
 import { SessionInbox } from "@opencode/schema/session-inbox"
 import { PromptInput } from "@opencode/schema/prompt-input"
 import { Session } from "@opencode/schema/session"
-import { SessionSearch } from "@opencode/schema/session-search"
 import { SessionStats } from "@opencode/schema/session-stats"
 import { InstructionEntry } from "@opencode/schema/instruction-entry"
 import { Project } from "@opencode/schema/project"
@@ -118,22 +117,6 @@ export const SessionsQuery = Schema.Struct({
   cursor: Session.ListCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
-export const SessionSearchQuery = Schema.Struct({
-  query: Schema.String.annotate({
-    description:
-      "Words to find in session titles and messages. Every word must match; the last also matches as a prefix.",
-  }),
-  limit: Schema.NumberFromString.pipe(Schema.decodeTo(PositiveInt), Schema.optional).annotate({
-    description: "Maximum number of sessions to return. Defaults to 50.",
-  }),
-  ...Struct.omit(Session.ListFilter.fields, ["order", "search"]),
-}).annotate({ identifier: "SessionSearchQuery" })
-
-const PublicSessionSearchResult = Schema.Struct({
-  ...Struct.omit(SessionSearch.Result.fields, ["session"]),
-  session: PublicSessionInfo,
-}).annotate({ identifier: "SessionSearch.Result" })
-
 export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI extends HttpApiMiddleware.AnyId, FormS>(
   sessionLocationMiddleware: Context.Key<I, S>,
   formLocationMiddleware: Context.Key<FormI, FormS>,
@@ -175,25 +158,6 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           identifier: "experimental.session.stats",
           summary: "Get session statistics",
           description: "Aggregate local session activity, usage, and tool reliability for a time range.",
-        }),
-      ),
-    )
-    .add(
-      HttpApiEndpoint.get("session.search", "/api/experimental/session/search", {
-        query: SessionSearchQuery,
-        success: Schema.Struct({
-          data: Schema.Array(PublicSessionSearchResult),
-          pending: NonNegativeInt.annotate({
-            description: "Sessions not yet indexed. Their messages are missing from these results.",
-          }),
-        }).annotate({ identifier: "SessionSearchResponse" }),
-        error: ConflictError,
-      }).annotateMerge(
-        OpenApi.annotations({
-          identifier: "experimental.session.search",
-          summary: "Search sessions",
-          description:
-            "Rank sessions by matches in their titles and message text, with a highlighted snippet of the best match. The index is built on first use and kept current as searches run. Searches run one at a time; one still waiting when a newer search arrives is answered with a conflict instead of running.",
         }),
       ),
     )

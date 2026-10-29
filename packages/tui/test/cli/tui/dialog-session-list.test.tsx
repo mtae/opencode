@@ -146,32 +146,36 @@ const sessionInfo = (id: string, title: string, directory: string) => ({
 
 test("searches session content and shows the matching snippet", async () => {
   const events = createEventStream()
-  const searches: URLSearchParams[] = []
-  const calls = createFetch((url) => {
+  const searches: Record<string, unknown>[] = []
+  const calls = createFetch((url, request) => {
     if (url.pathname === "/api/location") {
       const directory = url.searchParams.get("location[directory]") ?? process.cwd()
       return json({ directory, project: { id: "proj_a", directory, canonical: directory } })
     }
     if (url.pathname === "/api/session") return json({ data: [], cursor: {} })
-    if (url.pathname !== "/api/experimental/session/search") return undefined
-    searches.push(url.searchParams)
-    return json({
-      data: [
-        {
-          session: sessionInfo("ses_hit", "Refactor auth", process.cwd()),
-          hits: 2,
-          match: {
-            messageID: "msg_hit",
-            source: "assistant",
-            snippet: [
-              { text: "rotate the ", highlight: false },
-              { text: "frobnicator", highlight: true },
-              { text: " keys weekly", highlight: false },
-            ],
-          },
+    if (url.pathname !== "/api/rpc/opencode.session-search/search") return undefined
+    return request.json().then((body: { input: Record<string, unknown> }) => {
+      searches.push(body.input)
+      return json({
+        output: {
+          data: [
+            {
+              session: sessionInfo("ses_hit", "Refactor auth", process.cwd()),
+              hits: 2,
+              match: {
+                messageID: "msg_hit",
+                source: "assistant",
+                snippet: [
+                  { text: "rotate the ", highlight: false },
+                  { text: "frobnicator", highlight: true },
+                  { text: " keys weekly", highlight: false },
+                ],
+              },
+            },
+          ],
+          pending: 0,
         },
-      ],
-      pending: 0,
+      })
     })
   }, events)
   const temporary = await tmpdir()
@@ -194,8 +198,8 @@ test("searches session content and shows the matching snippet", async () => {
     await app.mockInput.typeText("frob")
     const frame = await app.waitForFrame((value) => value.includes("rotate the frobnicator keys weekly"))
     expect(frame).toContain("Refactor auth")
-    expect(searches.at(-1)?.get("query")).toBe("frob")
-    expect(searches.at(-1)?.get("parentID")).toBe("null")
+    expect(searches.at(-1)?.query).toBe("frob")
+    expect(searches.at(-1)?.parentID).toBeNull()
   } finally {
     app.renderer.destroy()
     await storage.flush()
@@ -213,17 +217,20 @@ test("aborts a search the next keystroke supersedes", async () => {
       return json({ directory, project: { id: "proj_a", directory, canonical: directory } })
     }
     if (url.pathname === "/api/session") return json({ data: [], cursor: {} })
-    if (url.pathname !== "/api/experimental/session/search") return undefined
-    const query = url.searchParams.get("query") ?? ""
-    if (query === "frob")
-      return json({ data: [{ session: sessionInfo("ses_hit", "Refactor auth", process.cwd()), hits: 1 }], pending: 0 })
-    started.resolve()
-    return new Promise<Response>((_, reject) =>
-      request.signal.addEventListener("abort", () => {
-        aborted.push(query)
-        reject(request.signal.reason)
-      }),
-    )
+    if (url.pathname !== "/api/rpc/opencode.session-search/search") return undefined
+    return request.json().then(({ input }: { input: { query: string } }) => {
+      if (input.query === "frob")
+        return json({
+          output: { data: [{ session: sessionInfo("ses_hit", "Refactor auth", process.cwd()), hits: 1 }], pending: 0 },
+        })
+      started.resolve()
+      return new Promise<Response>((_, reject) =>
+        request.signal.addEventListener("abort", () => {
+          aborted.push(input.query)
+          reject(request.signal.reason)
+        }),
+      )
+    })
   }, events)
   const temporary = await tmpdir()
   let storage!: ReturnType<typeof useStorage>

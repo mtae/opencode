@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import path from "path"
-import type { SessionInfo, SessionSearchMatch } from "@opencode/client"
+import type { SessionInfo } from "@opencode/client"
+import { SessionSearch } from "@opencode/schema/session-search"
 import { Project } from "@opencode/schema/project"
 import { TextAttributes, type RGBA } from "@opentui/core"
 import { DIALOG_LIST_INSET, useDialog } from "../ui/dialog"
@@ -76,11 +77,23 @@ export function DialogSessionList() {
                 subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
               }
         if (query) {
-          const response = await client.api.session.search({ ...scope, query, limit: 50, parentID: null }, { signal })
+          const response = await client.api
+            .rpc(SessionSearch.Definition)
+            .search({ ...scope, query, limit: 50, parentID: null }, { signal })
+            .catch(async (error: unknown) => {
+              if (signal.aborted || isSuperseded(error)) throw error
+              // Without the session-search plugin, list still matches titles.
+              const page = await client.api.session.list(
+                { ...scope, search: query, limit: 50, order: "desc", parentID: null },
+                { signal },
+              )
+              return { data: page.data.map((session) => ({ session, match: undefined })), pending: 0 }
+            })
           return {
             query,
             allProjects,
-            sessions: response.data.map((result) => result.session),
+            // The RPC's encoded Session is the generated SessionInfo with readonly metadata.
+            sessions: response.data.map((result) => result.session as SessionInfo),
             matches: new Map(
               response.data.flatMap((result) =>
                 result.match && result.match.source !== "title" ? [[result.session.id, result.match]] : [],
@@ -347,6 +360,12 @@ export function DialogSessionList() {
 }
 
 // Starts the line shortly before the first matched term so narrow rows still show it.
+type SessionSearchMatch = typeof SessionSearch.Match.Encoded
+
+function isSuperseded(error: unknown) {
+  return typeof error === "object" && error !== null && "type" in error && error.type === "superseded"
+}
+
 function snippetLine(match: SessionSearchMatch) {
   const text = match.snippet.map((fragment) => fragment.text).join("")
   const first = match.snippet.findIndex((fragment) => fragment.highlight)
