@@ -44,7 +44,7 @@ describe("command palette sessions", () => {
     const searches: string[] = []
     const gets: string[] = []
 
-    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>>(
+    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>["items"]>(
       (resolve, reject) => {
         createRoot((dispose) => {
           const search = createServerSessionEntries({
@@ -53,10 +53,13 @@ describe("command palette sessions", () => {
             load: async (text) => {
               searches.push(text)
 
-              return [
-                { session },
-                { session: { ...session, id: "archived-session", time: { ...session.time, archived: 3 } } },
-              ]
+              return {
+                hits: [
+                  { session },
+                  { session: { ...session, id: "archived-session", time: { ...session.time, archived: 3 } } },
+                ],
+                pending: 0,
+              }
             },
             get: async (sessionID) => {
               gets.push(sessionID)
@@ -72,8 +75,8 @@ describe("command palette sessions", () => {
           const second = search("palette session")
           Promise.all([first, second])
             .then(([cancelled, entries]) => {
-              expect(cancelled).toEqual([])
-              resolve(entries)
+              expect(cancelled.items).toEqual([])
+              resolve(entries.items)
             })
             .catch(reject)
             .finally(dispose)
@@ -97,13 +100,13 @@ describe("command palette sessions", () => {
     const exact = { ...session, id: "ses_12345678901234567890123456", title: "Exact session" }
     const gets: string[] = []
 
-    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>>(
+    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>["items"]>(
       (resolve, reject) => {
         createRoot((dispose) => {
           const search = createServerSessionEntries({
             server: ServerConnection.Key.make("selected-server"),
             projects: () => [project],
-            load: async () => [],
+            load: async () => ({ hits: [], pending: 0 }),
             get: async (sessionID) => {
               gets.push(sessionID)
 
@@ -114,7 +117,9 @@ describe("command palette sessions", () => {
             recentCategory: () => "Recent sessions",
           })
 
-          search(exact.id).then(resolve, reject).finally(dispose)
+          search(exact.id)
+            .then((found) => resolve(found.items), reject)
+            .finally(dispose)
         })
       },
     )
@@ -124,33 +129,38 @@ describe("command palette sessions", () => {
   })
 
   test("describes a conversation match with the excerpt around it", async () => {
-    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>>(
+    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>["items"]>(
       (resolve, reject) => {
         createRoot((dispose) => {
           const search = createServerSessionEntries({
             server: ServerConnection.Key.make("selected-server"),
             projects: () => [project],
-            load: async () => [
-              {
-                session,
-                match: {
-                  source: "user",
-                  snippet: [
-                    { text: "We discussed this at length yesterday: rotate the ", highlight: false },
-                    { text: "frobnicator", highlight: true },
-                    { text: " keys weekly", highlight: false },
-                  ],
+            load: async () => ({
+              pending: 0,
+              hits: [
+                {
+                  session,
+                  match: {
+                    source: "user",
+                    snippet: [
+                      { text: "We discussed this at length yesterday: rotate the ", highlight: false },
+                      { text: "frobnicator", highlight: true },
+                      { text: " keys weekly", highlight: false },
+                    ],
+                  },
                 },
-              },
-              { session: { ...session, id: "session-title" }, match: { source: "title", snippet: [] } },
-            ],
+                { session: { ...session, id: "session-title" }, match: { source: "title", snippet: [] } },
+              ],
+            }),
             get: async () => session,
             untitled: () => "Untitled",
             category: () => "Sessions",
             recentCategory: () => "Recent sessions",
           })
 
-          search("frobnicator").then(resolve, reject).finally(dispose)
+          search("frobnicator")
+            .then((found) => resolve(found.items), reject)
+            .finally(dispose)
         })
       },
     )
@@ -177,7 +187,7 @@ describe("command palette sessions", () => {
           server,
           known: () => [session],
           projects: () => [project],
-          load: async () => [{ session: remote }],
+          load: async () => ({ hits: [{ session: remote }], pending: 0 }),
           get: async () => session,
           untitled: () => "Untitled",
           category: () => "Session",

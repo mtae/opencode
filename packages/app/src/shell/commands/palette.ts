@@ -243,12 +243,19 @@ type SessionSearchState = {
 type SessionSearchMatch = typeof SessionSearch.Match.Encoded
 type SessionHit = { session: SessionInfo; match?: SessionSearchMatch }
 
+/** The sessions a search found, and how many the server had not indexed yet, whose messages are missing from them. */
+export type SessionHits = { hits: SessionHit[]; pending: number }
+
 /** Searches Session titles and conversations for a query; without one, lists recent Sessions. */
-export function loadServerSessions(api: Pick<OpenCodeClient, "session" | "rpc">, search: string, signal: AbortSignal) {
+export function loadServerSessions(
+  api: Pick<OpenCodeClient, "session" | "rpc">,
+  search: string,
+  signal: AbortSignal,
+): Promise<SessionHits> {
   const list = () =>
     api.session
       .list({ parentID: null, search, archived: false, limit: 50 }, { signal })
-      .then((page) => page.data.map((session): SessionHit => ({ session })))
+      .then((page): SessionHits => ({ hits: page.data.map((session): SessionHit => ({ session })), pending: 0 }))
 
   if (!search) return list()
 
@@ -257,9 +264,11 @@ export function loadServerSessions(api: Pick<OpenCodeClient, "session" | "rpc">,
     .rpc(SessionSearch.Definition)
     .search({ parentID: null, query: search, archived: false, limit: 50 }, { signal })
     .then(
-      (result) =>
+      (result): SessionHits => ({
         // The RPC's encoded Session is the generated SessionInfo with readonly metadata.
-        result.data.map((hit): SessionHit => ({ session: hit.session as SessionInfo, match: hit.match })),
+        hits: result.data.map((hit): SessionHit => ({ session: hit.session as SessionInfo, match: hit.match })),
+        pending: result.pending,
+      }),
       list,
     )
 }
@@ -282,7 +291,7 @@ export function createServerSessionEntries(props: {
   /** Hides sessions deleted since they were loaded. */
   apply?: (sessions: SessionInfo[]) => SessionInfo[]
   projects: () => Project[]
-  load: (search: string, signal: AbortSignal) => Promise<SessionHit[]>
+  load: (search: string, signal: AbortSignal) => Promise<SessionHits>
   get: (sessionID: string, signal: AbortSignal) => Promise<SessionInfo>
   untitled: () => string
   category: () => string
@@ -339,7 +348,7 @@ export function createServerSessionEntries(props: {
     })
   }
 
-  const search = async (text: string): Promise<CommandPaletteEntry[]> => {
+  const search = async (text: string): Promise<{ items: CommandPaletteEntry[]; pending: number }> => {
     const search = text.trim()
 
     abort(state.abort)
@@ -359,12 +368,12 @@ export function createServerSessionEntries(props: {
       )
     })
 
-    if (current.signal.aborted) return []
+    if (current.signal.aborted) return { items: [], pending: 0 }
 
     const [listed, exact] = await Promise.all([
       props.load(search, current.signal).then(
-        (items) => ({ items, failed: false }),
-        () => ({ items: [], failed: true }),
+        ({ hits, pending }) => ({ items: hits, pending, failed: false }),
+        () => ({ items: [], pending: 0, failed: true }),
       ),
       looksLikeSessionID(search)
         ? props.get(search, current.signal).then(
@@ -374,7 +383,7 @@ export function createServerSessionEntries(props: {
         : Promise.resolve([]),
     ])
 
-    if (current.signal.aborted) return []
+    if (current.signal.aborted) return { items: [], pending: 0 }
 
     if (listed.failed && exact.length === 0) throw new Error("Session search failed")
 
@@ -387,7 +396,7 @@ export function createServerSessionEntries(props: {
     ])
 
     // The local collection owns the recent rows, including newly loaded ones.
-    return search ? entries(loaded, search) : []
+    return { items: search ? entries(loaded, search) : [], pending: listed.pending }
   }
 
   return Object.assign(search, {

@@ -53,7 +53,7 @@ export function DialogSessionSearch() {
 
     return {
       items: (query: string) => format(load.items(query)),
-      search: (query: string) => load.search(query).then(format),
+      search: (query: string) => load.search(query).then((found) => ({ ...found, items: format(found.items) })),
     }
   })
 
@@ -66,11 +66,13 @@ export function DialogSessionSearch() {
   }
 
   const sessions = async (query: string) => {
-    const entries = (await Promise.all(loaders.map((loader) => loader.search(query))))
-      .flat()
-      .toSorted((a, b) => (b.updated ?? 0) - (a.updated ?? 0))
+    const found = await Promise.all(loaders.map((loader) => loader.search(query)))
+    const entries = found.flatMap((result) => result.items).toSorted((a, b) => (b.updated ?? 0) - (a.updated ?? 0))
 
-    return query ? entries : entries.slice(0, RECENT_LIMIT)
+    return {
+      items: query ? entries : entries.slice(0, RECENT_LIMIT),
+      pending: found.reduce((total, result) => total + result.pending, 0),
+    }
   }
 
   const select = (item: CommandPaletteEntry | undefined) => {

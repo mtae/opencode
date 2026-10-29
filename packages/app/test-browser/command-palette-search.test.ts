@@ -126,7 +126,12 @@ describe("command palette search", () => {
   test("filters previous remote results synchronously while a refined query is pending", async () => {
     const first = Promise.withResolvers<CommandPaletteEntry[]>()
     const second = Promise.withResolvers<CommandPaletteEntry[]>()
-    const otherFile: CommandPaletteEntry = { id: "file: readme.md", type: "file", title: "readme.md", category: "Files" }
+    const otherFile: CommandPaletteEntry = {
+      id: "file: readme.md",
+      type: "file",
+      title: "readme.md",
+      category: "Files",
+    }
     const ready = Promise.withResolvers<void>()
 
     const root = createRoot((dispose) => {
@@ -152,6 +157,64 @@ describe("command palette search", () => {
     root.setQuery("copy")
     expect(root.search.loading()).toBe(true)
     expect(root.search.items()).toEqual([file])
+    root.dispose()
+  })
+
+  test("asks again for the same query while the server still indexes, then stops", async () => {
+    const warmed = Promise.withResolvers<void>()
+    const calls: string[] = []
+
+    const root = createRoot((dispose) => {
+      const search = createCommandPaletteSearch({
+        query: () => "copy",
+        items: () => [],
+        sources: [
+          async (text) => {
+            calls.push(text)
+            return calls.length < 3 ? { items: [], pending: 2 } : { items: [file], pending: 0 }
+          },
+        ],
+      })
+
+      createComputed(() => {
+        if (search.items().some((entry) => entry.id === file.id)) warmed.resolve()
+      })
+
+      return { search, dispose }
+    })
+
+    await warmed.promise
+    expect(calls).toEqual(["copy", "copy", "copy"])
+    expect(root.search.items()).toEqual([file])
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    expect(calls).toHaveLength(3)
+    root.dispose()
+  })
+
+  test("a new query cancels the pending retry of the old one", async () => {
+    const calls: string[] = []
+
+    const root = createRoot((dispose) => {
+      const [query, setQuery] = createSignal("copy")
+      const search = createCommandPaletteSearch({
+        query,
+        items: () => [],
+        sources: [
+          async (text) => {
+            calls.push(text)
+            return { items: [], pending: 1 }
+          },
+        ],
+      })
+
+      return { search, setQuery, dispose }
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    root.setQuery("other")
+    await new Promise((resolve) => setTimeout(resolve, 1300))
+    expect(calls.filter((text) => text === "copy")).toEqual(["copy"])
+    expect(calls.filter((text) => text === "other").length).toBeGreaterThanOrEqual(1)
     root.dispose()
   })
 })

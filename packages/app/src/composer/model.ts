@@ -217,10 +217,10 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
     known: createKnownServerSessions(server.ctx),
     projects: server.ctx.projects.list,
     load: async (search, signal) => {
-      const hits = await loadServerSessions(serverSDK.api, search, signal)
-      hits.forEach((hit) => data.session.remember(hit.session))
+      const found = await loadServerSessions(serverSDK.api, search, signal)
+      found.hits.forEach((hit) => data.session.remember(hit.session))
 
-      return hits
+      return found
     },
     get: async (sessionID, signal) => {
       const session = await serverSDK.api.session.get({ sessionID }, { signal })

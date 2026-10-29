@@ -11,7 +11,7 @@ import { useTabs } from "@/shell/tabs/tabs"
 import { SessionTabAvatar } from "@/shell/layout/session-tab-avatar"
 import { getRelativeTime } from "@/shell/time"
 import { createCommandPaletteFileEntry, createCommandPaletteModel, type CommandPaletteEntry } from "./palette"
-import { createCommandPaletteSearch, matchesCommandPaletteEntry } from "./search"
+import { createCommandPaletteSearch, matchesCommandPaletteEntry, type CommandPaletteSource } from "./search"
 import "./dialog.css"
 import "../palette-menu.css"
 
@@ -58,7 +58,7 @@ export function DialogCommandPalette(props: { onOpenFile?: (path: string) => voi
 export function CommandPaletteView(props: {
   placeholder: string
   items: (query: string) => CommandPaletteEntry[]
-  sources: ((query: string, signal: AbortSignal) => Promise<CommandPaletteEntry[]>)[]
+  sources: CommandPaletteSource[]
   highlight: (item: CommandPaletteEntry | undefined) => void
   select: (item: CommandPaletteEntry | undefined) => void
   close: () => void
