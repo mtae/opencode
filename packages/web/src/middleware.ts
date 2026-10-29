@@ -77,18 +77,29 @@ function localeFromAcceptLanguage(header: string | null) {
   return locale ?? "root"
 }
 
-export const onRequest = defineMiddleware((ctx, next) => {
+const SECURITY_TXT_LINK = '</.well-known/security.txt>; rel="security.txt"'
+
+function withSecurityLink(response: Response) {
+  response.headers.append("Link", SECURITY_TXT_LINK)
+  return response
+}
+
+export const onRequest = defineMiddleware(async (ctx, next) => {
   const alias = docsAlias(ctx.url.pathname)
   if (alias) {
-    return redirect(ctx.url, alias.path, alias.locale)
+    return withSecurityLink(redirect(ctx.url, alias.path, alias.locale))
   }
 
-  if (ctx.url.pathname !== "/docs" && ctx.url.pathname !== "/docs/") return next()
+  if (ctx.url.pathname !== "/docs" && ctx.url.pathname !== "/docs/") {
+    return withSecurityLink(await next())
+  }
 
   const locale =
     localeFromCookie(ctx.request.headers.get("cookie")) ??
     localeFromAcceptLanguage(ctx.request.headers.get("accept-language"))
-  if (!locale || locale === "root") return next()
+  if (!locale || locale === "root") {
+    return withSecurityLink(await next())
+  }
 
-  return redirect(ctx.url, `/docs/${locale}/`)
+  return withSecurityLink(redirect(ctx.url, `/docs/${locale}/`))
 })

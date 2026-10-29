@@ -1,0 +1,4 @@
+Contact: mailto:security@anoma.ly
+Expires: 2027-10-17T00:00:00.000Z
+Policy: https://github.com/anomalyco/opencode/security/advisories
+Canonical: https://opencode.ai/.well-known/security.txt
