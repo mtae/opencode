@@ -6,10 +6,18 @@ import { displayName } from "@opencode/ui/project-avatar"
 import { sessionLabel } from "@/session/title"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createMemo, onCleanup, onMount } from "solid-js"
+import { SessionSearch } from "@opencode/plugin/gui"
+import { usePluginHost } from "@/runtime/plugin/host"
 import { createStore } from "solid-js/store"
 import type { HomeController } from "../model"
 import { homeSessionSearchKey, type HomeSessionRecord, type HomeSessionsController } from "./controller"
 import { looksLikeSessionID } from "@/session/search"
+import { mergeSearchRows } from "./merge"
+
+// Matches the palette's pause before it asks the server, and skips single characters, which match nearly everything.
+const REMOTE_DELAY = 150
+
+const REMOTE_MIN_LENGTH = 2
 
 type HomeSessionSearchSource = Pick<HomeSessionsController, "data" | "session">
 
@@ -18,6 +26,7 @@ export function createHomeSessionSearchController(home: HomeController, sessions
   const language = useLanguage()
   const layout = useLayout()
   const servers = useServers()
+  const plugins = usePluginHost()
 
   const [state, setState] = createStore<{
     value: string
@@ -25,15 +34,20 @@ export function createHomeSessionSearchController(home: HomeController, sessions
     highlighted: string
     exact: HomeSessionRecord | undefined
     lookingUp: boolean
+    remote: HomeSessionRecord[]
+    searching: boolean
   }>({
     value: "",
     focused: false,
     highlighted: "",
     exact: undefined,
     lookingUp: false,
+    remote: [],
+    searching: false,
   })
 
   let lookup = 0
+  let remote: { timer: ReturnType<typeof setTimeout>; abort: AbortController } | undefined
   let root: HTMLDivElement | undefined
   let input: HTMLInputElement | undefined
   let list: HTMLDivElement | undefined
@@ -48,9 +62,7 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       .searchRecords()
       .filter((record) => `${sessionLabel(record.session)} ${record.projectName}`.toLowerCase().includes(value))
 
-    if (!state.exact || records.some((record) => record.session.id === state.exact?.session.id)) return records
-
-    return [state.exact, ...records]
+    return mergeSearchRows({ local: records, exact: state.exact, remote: state.remote })
   })
 
   const active = createMemo(() => {
@@ -86,7 +98,10 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       close()
     }),
   )
-  onCleanup(() => lookup++)
+  onCleanup(() => {
+    lookup++
+    cancelRemote()
+  })
   onMount(() => {
     if (layout.home.searchFocus.take()) focus()
   })
@@ -109,13 +124,56 @@ export function createHomeSessionSearchController(home: HomeController, sessions
 
   function close() {
     lookup++
-    setState({ value: "", focused: false, exact: undefined, lookingUp: false })
+    cancelRemote()
+    setState({ value: "", focused: false, exact: undefined, lookingUp: false, remote: [], searching: false })
+  }
+
+  function cancelRemote() {
+    if (!remote) return
+    clearTimeout(remote.timer)
+    remote.abort.abort()
+    remote = undefined
+  }
+
+  // Asks the plugins' session search sources once typing pauses. The local results are already showing, so a source
+  // that is slow, fails or finds nothing leaves them as they are.
+  function searchRemote(text: string) {
+    cancelRemote()
+    setState({ remote: [], searching: false })
+
+    const sources = plugins.list(SessionSearch)
+    const client = home.server.focusedContext()?.sdk.api
+
+    if (text.length < REMOTE_MIN_LENGTH || looksLikeSessionID(text) || !client || sources.length === 0) return
+
+    const abort = new AbortController()
+    setState("searching", true)
+    remote = {
+      abort,
+      timer: setTimeout(() => {
+        void Promise.all(
+          sources.map((source) =>
+            Promise.resolve()
+              .then(() => source.search({ query: text, client, signal: abort.signal }))
+              .catch(() => []),
+          ),
+        ).then((found) => {
+          if (abort.signal.aborted) return
+          remote = undefined
+          setState({
+            remote: sessions.data.recordsFor(found.flat().filter((session) => !session.time.archived)),
+            searching: false,
+          })
+        })
+      }, REMOTE_DELAY),
+    }
   }
 
   function update(value: string) {
     const current = ++lookup
     const sessionID = value.trim()
     setState({ value, highlighted: "", exact: undefined, lookingUp: false })
+    searchRemote(sessionID)
 
     if (!looksLikeSessionID(sessionID)) return
     setState("lookingUp", true)
@@ -147,7 +205,8 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       close,
     },
     result: {
-      loading: () => sessions.data.loading() || state.lookingUp,
+      // The list stays up while the server looks: only an empty one waits, so its no-results line does not flash.
+      loading: () => sessions.data.loading() || state.lookingUp || (state.searching && results().length === 0),
       list: results,
       active,
       noResultsLabel: () => language.t("home.sessions.search.noResults", { query: query() }),
