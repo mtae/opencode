@@ -85,6 +85,15 @@ export function createHomeSessionsController(home: HomeController) {
     }),
   )
 
+  // Records for sessions found outside the loaded list, scoped to the selected project like the loaded ones.
+  const recordsFor = (sessions: readonly SessionInfo[]) =>
+    buildHomeSessionRecords({
+      sessions: () => [...sessions],
+      projectDirectories,
+      projects: home.project.list,
+      resolveProject: (session) => home.server.focusedContext()?.projects.forSession(session),
+    })
+
   const records = createMemo(() => allRecords().slice(0, HOME_SESSION_LIMIT))
   const groups = createMemo(() => groupSessions(records(), language))
   const prefetched = new Set<string>()
@@ -300,6 +309,7 @@ export function createHomeSessionsController(home: HomeController) {
       groups,
       loading: () => sessionLoad.isPending,
       searchRecords: allRecords,
+      recordsFor,
     },
     platform: {
       desktop: platform.platform === "desktop",
