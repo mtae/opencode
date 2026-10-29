@@ -145,6 +145,7 @@ export type SessionListOutput = {
     readonly previous?: Session.ListCursor | undefined
     readonly next?: Session.ListCursor | undefined
   }
+  readonly pending?: number | undefined
 }
 export type SessionListOperation<E = never> = (input?: SessionListInput) => Effect.Effect<SessionListOutput, E>
 

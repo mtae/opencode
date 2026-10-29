@@ -5,8 +5,14 @@ import { Context, Effect, Layer, Scope } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import type { SessionStore } from "./store.js"
 
+export interface Found {
+  readonly ids: ReadonlyArray<Session.ID>
+  /** Sessions the provider could not search yet, such as ones still being indexed. Their matches are missing from ids. */
+  readonly pending?: number
+}
+
 /** Finds Sessions for list's `search` text beyond the title match, such as by their messages. Never fails. */
-export type Provider = (filter: SessionStore.Filter, query: string) => Effect.Effect<ReadonlyArray<Session.ID>>
+export type Provider = (filter: SessionStore.Filter, query: string) => Effect.Effect<Found>
 
 export interface Interface {
   /**
@@ -15,8 +21,14 @@ export interface Interface {
    * it hands the id back to the one before, so a closed location never leaves its provider behind.
    */
   readonly register: (id: string, provider: Provider) => Effect.Effect<void, never, Scope.Scope>
-  /** The union of every provider's matches, or undefined when none is registered, so list matches titles only. */
-  readonly matches: (filter: SessionStore.Filter, query: string) => Effect.Effect<ReadonlyArray<Session.ID> | undefined>
+  /**
+   * The union of every provider's matches and the most Sessions any of them still has pending, or undefined when none
+   * is registered, so list matches titles only.
+   */
+  readonly matches: (
+    filter: SessionStore.Filter,
+    query: string,
+  ) => Effect.Effect<{ readonly ids: ReadonlyArray<Session.ID>; readonly pending: number } | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionListSearch") {}
@@ -45,7 +57,10 @@ const layer = Layer.sync(Service, () => {
     const found = yield* Effect.forEach([...providers.values()], (held) => held.at(-1)!.provider(filter, query), {
       concurrency: "unbounded",
     })
-    return [...new Set(found.flat())]
+    return {
+      ids: [...new Set(found.flatMap((item) => item.ids))],
+      pending: Math.max(0, ...found.map((item) => item.pending ?? 0)),
+    }
   })
 
   return Service.of({ register, matches })

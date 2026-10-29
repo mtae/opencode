@@ -128,6 +128,8 @@ export interface Interface {
     {
       readonly data: SessionSchema.Info[]
       readonly cursor: { readonly previous?: ListCursor; readonly next?: ListCursor }
+      /** Sessions a search could not cover yet, such as ones still being indexed. Absent when none; not a page count. */
+      readonly pending?: number
     },
     InvalidListCursorError
   >
@@ -413,8 +415,8 @@ const layer = Layer.effect(
             : yield* ListCursor.parse(input.cursor).pipe(Effect.mapError(() => new InvalidListCursorError()))
         // Clients that only know list's title filter, such as the mobile app, also find Sessions by their messages.
         const query = filter.search?.trim()
-        const matches = query ? yield* listSearch.matches(filter, query) : undefined
-        const data = yield* store.list({ ...filter, matches, limit: input.limit ?? DefaultListLimit })
+        const found = query ? yield* listSearch.matches(filter, query) : undefined
+        const data = yield* store.list({ ...filter, matches: found?.ids, limit: input.limit ?? DefaultListLimit })
         const first = data[0]
         const last = data.at(-1)
         return {
@@ -433,6 +435,7 @@ const layer = Layer.effect(
                 })
               : undefined,
           },
+          ...(found && found.pending > 0 ? { pending: found.pending } : {}),
         }
       }),
       messages: Effect.fn("Session.messages")(function* (input) {

@@ -16197,6 +16197,17 @@
               }
             ]
           },
+          "search": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "enum": [false]
+              },
+              {
+                "$ref": "#/components/schemas/ConfigSearch.InfoEncoded"
+              }
+            ]
+          },
           "plugins": {
             "type": "array",
             "items": {
@@ -16623,9 +16634,26 @@
                 "type": "null"
               }
             ]
+          },
+          "search": {
+            "anyOf": [
+              {
+                "anyOf": [
+                  {
+                    "type": "boolean",
+                    "enum": [false]
+                  },
+                  {
+                    "$ref": "#/components/schemas/ConfigSearch.InfoEncoded"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
-        "required": ["shell"],
         "additionalProperties": false
       },
       "Config.Plugin.EntryEncoded": {
@@ -16804,6 +16832,17 @@
           }
         },
         "required": ["directory"],
+        "additionalProperties": false
+      },
+      "ConfigSearch.InfoEncoded": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["titles", "content"],
+            "description": "titles matches Session titles only. content also matches message text (default)."
+          }
+        },
         "additionalProperties": false
       },
       "ConfigShell.Option": {
@@ -23206,6 +23245,18 @@
               }
             },
             "additionalProperties": false
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With a search, how many sessions could not be searched by their messages yet because they are still being indexed. Absent when none. Search again shortly for the rest; this is not a page or result count."
           }
         },
         "required": ["data", "cursor"],

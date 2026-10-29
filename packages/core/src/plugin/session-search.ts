@@ -13,8 +13,8 @@ import { SessionSearch } from "./session-search/search.js"
 // search finds no more Sessions than this.
 const ListSearchMatches = 500
 
-// List answers no `pending` count, so its search waits for a cold index to finish building, up to this long, instead of
-// the shorter wait the RPC uses. Indexing goes on after that, and the next search finds the rest.
+// List waits for a cold index to finish building, up to this long, instead of the shorter wait the RPC uses. Indexing
+// goes on after that, and list reports what is still `pending` so a client can search again for the rest.
 const ListIndexWait = 15_000
 
 const encode = Schema.encodeEffect(SessionSearchSchema.SearchResponse)
@@ -24,14 +24,14 @@ export const listProvider =
   (search: SessionSearch.Interface, mode: () => ConfigSearch.Mode): SessionListSearch.Provider =>
   (filter, query) =>
     mode() === "titles"
-      ? Effect.succeed([])
+      ? Effect.succeed({ ids: [] })
       : search.search({ ...filter, query, limit: ListSearchMatches, wait: ListIndexWait }).pipe(
-          Effect.map((found) => found.data.map((result) => result.session.id)),
+          Effect.map((found) => ({ ids: found.data.map((result) => result.session.id), pending: found.pending })),
           // Superseded by another search, or the index failed: match titles only, as before.
-          Effect.catchTag("SessionSearch.SupersededError", () => Effect.succeed([])),
+          Effect.catchTag("SessionSearch.SupersededError", () => Effect.succeed({ ids: [] })),
           Effect.catchCauseIf(
             (cause) => !Cause.hasInterrupts(cause),
-            (cause) => Effect.logWarning("Session list search fell back to titles", cause).pipe(Effect.as([])),
+            (cause) => Effect.logWarning("Session list search fell back to titles", cause).pipe(Effect.as({ ids: [] })),
           ),
         )
 

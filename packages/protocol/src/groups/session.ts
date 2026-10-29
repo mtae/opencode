@@ -131,6 +131,10 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
             previous: Session.ListCursor.pipe(Schema.optional),
             next: Session.ListCursor.pipe(Schema.optional),
           }),
+          pending: NonNegativeInt.pipe(Schema.optional).annotate({
+            description:
+              "With a search, how many sessions could not be searched by their messages yet because they are still being indexed. Absent when none. Search again shortly for the rest; this is not a page or result count.",
+          }),
         }).annotate({ identifier: "SessionsResponse" }),
         error: [InvalidCursorError, InvalidRequestError],
       }).annotateMerge(

@@ -134,11 +134,45 @@ describe("Session.list", () => {
     }),
   )
 
+  it.effect("reports the pending count of a cold index, and omits it when nothing is pending", () =>
+    Effect.gen(function* () {
+      const { byMessage, byTitle } = yield* handshakes
+      const listSearch = yield* SessionListSearch.Service
+      const session = yield* Session.Service
+      const search = session.list({ directory: project.directory, search: "handshake", limit: 1 })
+      const reporting = (pending: number): SessionListSearch.Provider => () =>
+        Effect.succeed({ ids: [byMessage], pending })
+
+      yield* listSearch.register("opencode.session-search", reporting(0))
+      expect(yield* search).not.toHaveProperty("pending")
+      yield* listSearch.register("opencode.session-search", reporting(3))
+      const cold = yield* search
+      // Pending is not a page or result count: data and cursor stay intact beside it.
+      expect(cold.pending).toBe(3)
+      expect(cold.data).toHaveLength(1)
+      expect(cold.cursor.next).toBeDefined()
+      expect([byMessage, byTitle]).toContain(cold.data[0]!.id)
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect("omits pending in titles mode and without the session search plugin", () =>
+    Effect.gen(function* () {
+      yield* handshakes
+      const session = yield* Session.Service
+      expect(yield* session.list({ directory: project.directory, search: "handshake" })).not.toHaveProperty("pending")
+      yield* (yield* SessionListSearch.Service).register(
+        "opencode.session-search",
+        SessionSearchPlugin.listProvider(yield* SessionSearch.Service, () => "titles"),
+      )
+      expect(yield* session.list({ directory: project.directory, search: "handshake" })).not.toHaveProperty("pending")
+    }).pipe(Effect.scoped),
+  )
+
   it.effect("falls back to the older provider when the newest registration is released", () =>
     Effect.gen(function* () {
       const { byMessage, byTitle } = yield* handshakes
       const listSearch = yield* SessionListSearch.Service
-      const matching = (ids: Session.ID[]): SessionListSearch.Provider => () => Effect.succeed(ids)
+      const matching = (ids: Session.ID[]): SessionListSearch.Provider => () => Effect.succeed({ ids })
       yield* listSearch.register("opencode.session-search", matching([byMessage]))
       const newest = yield* Scope.make()
       yield* listSearch.register("opencode.session-search", matching([])).pipe(Scope.provide(newest))
