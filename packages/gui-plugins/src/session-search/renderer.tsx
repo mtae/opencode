@@ -1,9 +1,7 @@
 import { lazy, Suspense } from "solid-js"
 import { SessionSearch, SettingsPage, type Plugin } from "@opencode/plugin/gui"
 import type SessionSearchDefinition from "./index"
-
-// Past this many matches the Home list stops being a search; the title and project filter has no such cap.
-const LIMIT = 50
+import { listMatches } from "./matches"
 
 /**
  * Adds server matches to the Home session search. The server matches message content when `GET /api/session` has a
@@ -20,12 +18,7 @@ const setup: Plugin.Setup<typeof SessionSearchDefinition> = (ctx) => {
     search: async (input) => {
       if (!options.value.enabled) return []
 
-      const result = await input.client.session.list(
-        { parentID: null, search: input.query, archived: false, limit: LIMIT },
-        { signal: input.signal },
-      )
-
-      return result.data
+      return listMatches(input)
     },
   })
 

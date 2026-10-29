@@ -576,6 +576,12 @@ export interface SessionSearchInput {
   readonly query: string
   /** The API client of the server whose sessions are searched. */
   readonly client: OpenCodeClient
+  /**
+   * The directories the host shows sessions from, when the user scoped the search to one project (its worktrees and
+   * sandboxes). Matches elsewhere are dropped, so a source asks for these only, before its own result limit. Absent
+   * when every project is searched.
+   */
+  readonly directories?: readonly string[]
   /** Aborts when the query changes or the search closes. Pass it to every request. */
   readonly signal: AbortSignal
 }

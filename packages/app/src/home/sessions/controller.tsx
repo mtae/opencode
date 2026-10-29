@@ -310,6 +310,7 @@ export function createHomeSessionsController(home: HomeController) {
       loading: () => sessionLoad.isPending,
       searchRecords: allRecords,
       recordsFor,
+      projectDirectories,
     },
     platform: {
       desktop: platform.platform === "desktop",

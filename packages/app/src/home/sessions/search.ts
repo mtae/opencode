@@ -154,7 +154,9 @@ export function createHomeSessionSearchController(home: HomeController, sessions
         void Promise.all(
           sources.map((source) =>
             Promise.resolve()
-              .then(() => source.search({ query: text, client, signal: abort.signal }))
+              .then(() =>
+                source.search({ query: text, client, signal: abort.signal, directories: sessions.data.projectDirectories() }),
+              )
               .catch(() => []),
           ),
         ).then((found) => {
