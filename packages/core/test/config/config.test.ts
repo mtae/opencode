@@ -182,6 +182,33 @@ describe("Config", () => {
     ),
   )
 
+  it.live("patches the search selection into the global config and keeps the other keys", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) => {
+        const global = path.join(tmp.path, "global")
+        const file = path.join(global, "opencode.json")
+        const read = () => Effect.promise(async () => JSON.parse(await fs.readFile(file, "utf8")))
+
+        return Effect.promise(async () => {
+          await fs.mkdir(global, { recursive: true })
+          await fs.writeFile(file, JSON.stringify({ shell: "keep" }))
+        }).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              yield* config.update!({ search: { mode: "titles" } })
+              expect(yield* read()).toEqual({ shell: "keep", search: { mode: "titles" } })
+              yield* config.update!({ search: false, shell: null })
+              expect(yield* read()).toEqual({ search: false })
+              yield* config.update!({ search: null })
+              expect(yield* read()).toEqual({})
+            }).pipe(Effect.provide(testLayer(tmp.path, global))),
+          ),
+        )
+      }),
+    ),
+  )
+
   it.live("excludes global config reached through the project walk when global is disabled", () =>
     Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
       Effect.flatMap((tmp) => {
