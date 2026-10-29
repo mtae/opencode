@@ -27,6 +27,10 @@ export interface RealtimeConnectInput {
   readonly baseURL?: string
   /** Headers that host needs besides the API key, such as OpenCode's workspace. */
   readonly headers?: Readonly<Record<string, string>>
+  /** Legacy Codex negotiates raw SDP rather than the public Live session envelope. */
+  readonly liveProtocol?: "codex"
+  /** Attach server-side control to the same legacy call; never exposed to the phone. */
+  readonly onLegacyCall?: (callID: string) => Effect.Effect<void>
   readonly session?: RealtimeSession
   readonly transport: RealtimeTransportInput
 }
@@ -63,6 +67,26 @@ export const connect = Effect.fn("Realtime.connect")(function* (input: RealtimeC
 
   switch (resolved.id) {
     case "openai-live": {
+      if (input.liveProtocol === "codex") {
+        if (input.transport.type !== "webrtc") return yield* invalidRequest("Codex GPT-Live requires WebRTC")
+        const sdp = yield* post(
+          resolved.id,
+          `${input.baseURL ?? "https://chatgpt.com/backend-api/codex"}/realtime/calls?intent=quicksilver&architecture=avas`,
+          input.apiKey,
+          { sdp: input.transport.sdp, session },
+          Schema.String,
+          {
+            headers: input.headers,
+            onResponse: input.onLegacyCall
+              ? (headers) => {
+                  const id = legacyCallID(headers.location, headers["openai-session-id"])
+                  return id ? input.onLegacyCall!(id) : Effect.logInfo("voice.session.control.missing-call-id")
+                }
+              : undefined,
+          },
+        )
+        return { type: "webrtc" as const, sdp }
+      }
       const data = yield* post(
         resolved.id,
         `${input.baseURL ?? OPENAI_BASE_URL}/live/sessions`,
@@ -152,13 +176,26 @@ const AuthTokenResponse = Schema.fromJsonString(
 
 const invalidRequest = (message: string) => new AIError({ reason: new InvalidRequestError({ message }) })
 
+export const legacyCallID = (location?: string, sessionHeader?: string) => {
+  const valid = /^(rtc_[\w-]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+  try {
+    const id = location && new URL(location, "https://chatgpt.com").pathname.split("/").find((part) => valid.test(part))
+    if (id) return id
+  } catch {}
+  return sessionHeader && valid.test(sessionHeader.trim()) ? sessionHeader.trim() : undefined
+}
+
 const post = <A>(
   route: string,
   url: string,
   apiKey: Redacted.Redacted,
   body: Record<string, unknown> | FormData,
   response: Schema.Codec<A, string>,
-  options: { readonly authHeader?: string; readonly headers?: Readonly<Record<string, string>> } = {},
+  options: {
+    readonly authHeader?: string
+    readonly headers?: Readonly<Record<string, string>>
+    readonly onResponse?: (headers: Readonly<Record<string, string>>) => Effect.Effect<void>
+  } = {},
 ) =>
   Effect.gen(function* () {
     const executor = yield* RequestExecutor.Service
@@ -177,9 +214,11 @@ const post = <A>(
     const fail = (message: string, cause?: unknown, raw?: string) =>
       new AIError({ reason: new InvalidProviderOutputError({ route, message, body: raw, http, cause }) })
     const text = yield* res.text.pipe(Effect.mapError((cause) => fail(`Failed to read ${route} response`, cause)))
-    return yield* Schema.decodeEffect(response)(text).pipe(
+    const decoded = yield* Schema.decodeEffect(response)(text).pipe(
       Effect.mapError((cause) => fail(`${route} returned an invalid response`, cause, text)),
     )
+    if (options.onResponse) yield* options.onResponse(res.headers)
+    return decoded
   })
 
 const clientSecret = (
