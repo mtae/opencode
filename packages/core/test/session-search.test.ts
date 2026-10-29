@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { Database as BunDatabase } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { DateTime, Effect, Fiber, Schema } from "effect"
@@ -109,7 +110,10 @@ const edit = (sessionID: Session.ID, messageID: SessionMessage.ID, content: Sess
 
 const text = (value: string): SessionMessage.AssistantContent => ({ type: "text", text: value })
 
-const search = (query: string, filter: SessionStore.Filter & { readonly limit?: number } = {}) =>
+const search = (
+  query: string,
+  filter: SessionStore.Filter & { readonly limit?: number; readonly wait?: number } = {},
+) =>
   Effect.gen(function* () {
     const service = yield* SessionSearch.Service
     return yield* service.search({ ...filter, query })
@@ -371,6 +375,38 @@ describe("SessionSearch", () => {
   )
 })
 
+// A cold index of many messages, so building it takes longer than a search that does not wait.
+const coldIndex = Effect.gen(function* () {
+  yield* seedProject
+  const target = yield* createSession("ses_target", "Target")
+  yield* prompt(target, "msg_target", "capybara uniquetarget")
+  const bulk = yield* createSession("ses_bulk", "Bulk")
+  yield* prompt(bulk, "msg_bulk_source", "capybara filler")
+  const database = yield* Database.Service
+  const copies = 10_100
+  yield* database.db.run(sql`
+    INSERT INTO session_message (id, session_id, seq, time_created, time_updated, type, data)
+    SELECT 'msg_fill' || c.n, m.session_id, m.seq + c.n, m.time_created, m.time_updated, m.type, m.data
+    FROM session_message m,
+      (WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < ${copies}) SELECT n FROM c) c
+    WHERE m.id = 'msg_bulk_source'`)
+  yield* Bus.reserveSequence(database.db, bulk, (yield* Bus.latestSequence(database.db, bulk)) + copies)
+})
+
+// The sessions the index file records as indexed, read without searching, or 0 while there is no index yet.
+const indexedSessions = (file: string) => {
+  try {
+    const db = new BunDatabase(`${file}-search`, { readonly: true })
+    try {
+      return db.query<{ count: number }, []>("SELECT count(*) AS count FROM session_search_state").get()?.count ?? 0
+    } finally {
+      db.close()
+    }
+  } catch {
+    return 0
+  }
+}
+
 // A database in a file is searched by a worker thread, with the index in its own file beside it.
 const withFileDatabase = <A, E, R>(body: (file: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -387,6 +423,38 @@ const withFileDatabase = <A, E, R>(body: (file: string) => Effect.Effect<A, E, R
   })
 
 describe("SessionSearch worker", () => {
+  plain.live("waits for a cold index as long as asked and reports what it lacks when it does not", () =>
+    withFileDatabase(() =>
+      Effect.gen(function* () {
+        yield* coldIndex
+        const hurried = yield* search("uniquetarget", { wait: 1 })
+        expect(hurried.pending).toBeGreaterThan(0)
+
+        const patient = yield* search("uniquetarget", { wait: 30_000 })
+        expect(patient.pending).toBe(0)
+        expect(ids(patient)).toEqual(["ses_target"])
+      }),
+    ),
+  )
+
+  plain.live("builds the index even when the first search is cancelled before the worker is up", () =>
+    withFileDatabase((file) =>
+      Effect.gen(function* () {
+        yield* coldIndex
+        const waiting = yield* Effect.forkChild(search("uniquetarget", { wait: 30_000 }), { startImmediately: true })
+        yield* Fiber.interrupt(waiting)
+
+        // Nothing searches again until every session is indexed, so only the cancelled search can have started that.
+        yield* Effect.sleep("100 millis").pipe(Effect.repeat({ until: () => indexedSessions(file) === 2, times: 300 }))
+        expect(indexedSessions(file)).toBe(2)
+
+        const next = yield* search("uniquetarget", { wait: 30_000 })
+        expect(next.pending).toBe(0)
+        expect(ids(next)).toEqual(["ses_target"])
+      }),
+    ),
+  )
+
   plain.live("searches messages from a worker and keeps the index out of the main database", () =>
     withFileDatabase((file) =>
       Effect.gen(function* () {

@@ -50,7 +50,7 @@ Covers the server plugin (the list-search hook and the built-in `session-search`
 
 - **Filters apply before the read budget.** With `directory`, `project`, `parentID` or `archived` set, the index first resolves the sessions they allow and reads only their documents, so matches in other sessions cannot use up the 10,000-document budget and hide an older match in scope.
 - **Home passes its project.** With one project selected, the host gives each source the project's directories (`SessionSearchInput.directories`). The built-in source requests those directories, so the 50-row limit cuts only sessions Home would show. With every project selected nothing is passed.
-- **Cold index.** The first search of a large history waits one second for indexing and then returns what it has. The RPC says how many sessions are still missing (`pending`). Desktop's palette and the TUI ask again until `pending` is 0. `GET /api/session?search=` has no such field: a first cold query from Home, the CLI or iOS can lack content matches, and repeating the search a few seconds later returns them.
+- **Cold index.** The first search starts a worker that builds the index in the background; it keeps building when that search is cancelled or answers early. The RPC waits one second and then reports how many sessions are still missing (`pending`); Desktop's palette and the TUI ask again until `pending` is 0. `GET /api/session?search=` has no such field, so its search waits for indexing for up to 15 seconds and answers with whatever is indexed after that. A history that takes longer than that to index can still give a first list result without some content matches; the next search, once indexing has finished, is complete. Titles mode never waits.
 
 ## For native clients (iOS)
 
@@ -64,4 +64,4 @@ GET /api/session?parentID=null&archived=false&limit=50&search=handshake&project=
 - Scope: `project` (optionally with `subpath`) or `directory`; omit both for every project. Scope is applied before `limit`.
 - Limits: content matches are capped at 500 sessions per search; a cursor repeats the search, so pages agree while a search finds at most 500 sessions.
 - Fallback: with the plugin absent or the config set to `titles` the same call returns title matches only. Read the mode with the `opencode.session-search` `settings` RPC if the UI should say so.
-- Cold index: see above; treat an empty first result as possibly incomplete and offer a retry.
+- Cold index: the first search after the index is first built may take up to 15 seconds; see above. A result that took that long may lack content matches, so offer a retry.

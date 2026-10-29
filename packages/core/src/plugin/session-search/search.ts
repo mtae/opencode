@@ -1,7 +1,7 @@
 export * as SessionSearch from "./search.js"
 
 import { and, desc, sql } from "drizzle-orm"
-import { Context, Effect, Layer, Schema, Scope } from "effect"
+import { Context, Deferred, Effect, Layer, Schema, Scope } from "effect"
 import type { Worker } from "node:worker_threads"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import type { Result } from "@opencode/schema/session-search"
@@ -157,30 +157,40 @@ const layer = Layer.effect(
       }
     })
 
-    const backend = yield* Effect.cached(
-      Effect.gen(function* () {
-        const databases = yield* db.all<{ name: string; file: string }>(sql`PRAGMA database_list`)
-        const file = databases.find((database) => database.name === "main")?.file
-        if (file) {
-          const worker = yield* spawnWorker(file)
-          yield* Scope.addFinalizer(
-            scope,
-            Effect.promise(() => worker.terminate()),
-          )
-          return remote(worker, titles)
-        }
-        // Nothing else can open an in-memory database, so its index is attached to the same connection.
-        if (!databases.some((database) => database.name === "session_search"))
-          yield* db.run(sql`ATTACH DATABASE ':memory:' AS session_search`)
-        return yield* SessionSearchIndex.make({ app: db, index: db, schema: "session_search" }).pipe(
-          Scope.provide(scope),
+    const initialize = Effect.gen(function* () {
+      const databases = yield* db.all<{ name: string; file: string }>(sql`PRAGMA database_list`)
+      const file = databases.find((database) => database.name === "main")?.file
+      if (file) {
+        const worker = yield* spawnWorker(file)
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.promise(() => worker.terminate()),
         )
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Session search index unavailable, searching titles only", cause).pipe(Effect.as(titles)),
-        ),
+        return remote(worker, titles)
+      }
+      // Nothing else can open an in-memory database, so its index is attached to the same connection.
+      if (!databases.some((database) => database.name === "session_search"))
+        yield* db.run(sql`ATTACH DATABASE ':memory:' AS session_search`)
+      return yield* SessionSearchIndex.make({ app: db, index: db, schema: "session_search" }).pipe(Scope.provide(scope))
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Session search index unavailable, searching titles only", cause).pipe(Effect.as(titles)),
       ),
     )
+
+    // The first search starts the backend, but in the service's scope: a client that gives up while the worker starts
+    // must not stop the index from being built, which later searches wait for.
+    const boot: { current?: Deferred.Deferred<Backend> } = {}
+    const backend = Effect.suspend(() => {
+      if (boot.current) return Deferred.await(boot.current)
+      const done = Deferred.makeUnsafe<Backend>()
+      boot.current = done
+      return initialize.pipe(
+        Effect.onExit((exit) => Effect.sync(() => Deferred.doneUnsafe(done, exit))),
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.andThen(Deferred.await(done)),
+      )
+    })
 
     const search = Effect.fn("SessionSearch.search")(function* (input: Input) {
       const run = yield* backend

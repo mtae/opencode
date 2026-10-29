@@ -13,6 +13,10 @@ import { SessionSearch } from "./session-search/search.js"
 // search finds no more Sessions than this.
 const ListSearchMatches = 500
 
+// List answers no `pending` count, so its search waits for a cold index to finish building, up to this long, instead of
+// the shorter wait the RPC uses. Indexing goes on after that, and the next search finds the rest.
+const ListIndexWait = 15_000
+
 const encode = Schema.encodeEffect(SessionSearchSchema.SearchResponse)
 
 /** List's search hook: full-text matches in content mode, none in titles mode, so list matches titles only. */
@@ -21,7 +25,7 @@ export const listProvider =
   (filter, query) =>
     mode() === "titles"
       ? Effect.succeed([])
-      : search.search({ ...filter, query, limit: ListSearchMatches }).pipe(
+      : search.search({ ...filter, query, limit: ListSearchMatches, wait: ListIndexWait }).pipe(
           Effect.map((found) => found.data.map((result) => result.session.id)),
           // Superseded by another search, or the index failed: match titles only, as before.
           Effect.catchTag("SessionSearch.SupersededError", () => Effect.succeed([])),

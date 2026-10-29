@@ -32,6 +32,8 @@ const MaxScanned = 10_000
 // order the full-text index walks fastest is also newest first.
 const Bucket = 2 ** 20
 const Budget = Duration.seconds(1)
+// The longest a search may wait for indexing when its caller asks to wait longer than Budget.
+const MaxWait = Duration.seconds(15)
 const Weights: Record<Source, number> = { title: 3, user: 2, assistant: 1, synthetic: 1, shell: 1, tool: 0.5 }
 
 type Db = Database.Interface["db"]
@@ -273,6 +275,11 @@ function boundary(text: string, offset: number, direction: -1 | 1) {
 export type Input = SessionStore.Filter & {
   readonly query: string
   readonly limit?: number
+  /**
+   * Milliseconds to wait for indexing before answering with what is indexed so far; 1,000 by default, 15,000 at most.
+   * Indexing carries on after the search answers or is cancelled.
+   */
+  readonly wait?: number
 }
 
 /** Ranked Sessions as plain rows, so they can cross from a worker thread. */
@@ -696,11 +703,13 @@ export const make = Effect.fn("SessionSearchIndex.make")(function* (options: {
     return { found: yield* next(undefined, [], 0, Candidates), sessions }
   })
 
-  return Effect.fn("SessionSearchIndex.search")(function* (input: Input) {
+  const search = Effect.fn("SessionSearchIndex.search")(function* (input: Input) {
     const limit = input.limit ?? 50
     const done = yield* start
     const waited = yield* Deferred.await(done).pipe(
-      Effect.timeoutOption(Budget),
+      Effect.timeoutOption(
+        input.wait === undefined ? Budget : Duration.min(Duration.millis(Math.max(0, input.wait)), MaxWait),
+      ),
       Effect.catchCause((cause) =>
         Effect.logWarning("Session search indexing failed", cause).pipe(Effect.as(Option.none<number>())),
       ),
@@ -773,4 +782,7 @@ export const make = Effect.fn("SessionSearchIndex.make")(function* (options: {
       pending: remaining,
     }
   })
+
+  // Starts the catch-up without a search, so an index whose first search was cancelled still gets built.
+  return Object.assign(search, { warm: start.pipe(Effect.asVoid) })
 })

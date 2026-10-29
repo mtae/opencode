@@ -38,6 +38,8 @@ if (port) {
     // The index can be rebuilt from the main database, so its checkpoints skip the sync to disk.
     yield* index.run(sql`PRAGMA synchronous = OFF`)
     const search = yield* SessionSearchIndex.make({ app, index, schema: "main" })
+    // The worker exists because a search asked for it; that search may be cancelled, so indexing starts now.
+    yield* search.warm
     const context = yield* Effect.context<never>()
     const running = new Map<number, Fiber.Fiber<SessionSearchIndex.Found>>()
     port.on("message", (request: Request) => {

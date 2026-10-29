@@ -114,6 +114,26 @@ describe("Session.list", () => {
     }),
   )
 
+  it.effect("waits longer for a cold index than the RPC does, and not at all in titles mode", () =>
+    Effect.gen(function* () {
+      const waits: Array<number | undefined> = []
+      const fake = {
+        search: (input: SessionSearch.Input) =>
+          Effect.sync(() => {
+            waits.push(input.wait)
+            return { data: [], pending: 0 }
+          }),
+      } satisfies SessionSearch.Interface
+
+      yield* SessionSearchPlugin.listProvider(fake, () => "content")({ directory: project.directory }, "x")
+      yield* SessionSearchPlugin.listProvider(fake, () => "titles")({ directory: project.directory }, "x")
+
+      expect(waits).toHaveLength(1)
+      expect(waits[0]).toBeGreaterThan(1_000)
+      expect(waits[0]).toBeLessThanOrEqual(15_000)
+    }),
+  )
+
   it.effect("falls back to the older provider when the newest registration is released", () =>
     Effect.gen(function* () {
       const { byMessage, byTitle } = yield* handshakes
