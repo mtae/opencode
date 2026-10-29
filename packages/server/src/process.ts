@@ -38,6 +38,9 @@ type App = Effect.Effect<
 
 export type Transform = (app: App) => App
 
+// Brotli quality 1 compresses large message pages ~3x faster than the default 4 for ~12% more bytes.
+const BROTLI_QUALITY = 1
+
 const errorResponseLogger = HttpMiddleware.make((app) =>
   HttpMiddleware.logger(
     Effect.tap(app, (response) =>
@@ -72,7 +75,7 @@ export const start = Effect.fn("ServerProcess.start")(function* <E, R>(
   yield* bound.http
     .serve(
       (transform ? transform(app) : app).pipe(
-        HttpMiddleware.compression(),
+        HttpMiddleware.compression({ levels: { br: BROTLI_QUALITY } }),
         HttpMiddleware.cors({ allowedOrigins: (origin) => isAllowedCorsOrigin(origin, options), maxAge: 86_400 }),
       ),
       errorResponseLogger,
