@@ -39,9 +39,29 @@ Covers the server plugin (the list-search hook and the built-in `session-search`
 ## Compatibility limits
 
 - A stock server returns title matches only; the desktop plugin then adds nothing beyond local results.
-- The list hook is global and follows the last-activated location's config.
+- The list hook is global and follows the config of the newest location still loaded. Closing it hands the hook back to the one before. The GUI writes the global config, so every location agrees unless a project config sets `search`.
 - Cap: 500 sessions per server search, 50 requested by the desktop source.
 - Not indexed: tool output, reasoning, attachment contents. Each message is capped at 32 KB.
 - A server swap does not update an installed desktop renderer; the app needs its own update for the Home change.
 - Native iOS is not fixed: it filters loaded sessions locally. A written change request exists for its developers.
 - The app-local on/off switch is per device; the mode is the server's.
+
+## Scope and completeness
+
+- **Filters apply before the read budget.** With `directory`, `project`, `parentID` or `archived` set, the index first resolves the sessions they allow and reads only their documents, so matches in other sessions cannot use up the 10,000-document budget and hide an older match in scope.
+- **Home passes its project.** With one project selected, the host gives each source the project's directories (`SessionSearchInput.directories`). The built-in source requests those directories, so the 50-row limit cuts only sessions Home would show. With every project selected nothing is passed.
+- **Cold index.** The first search of a large history waits one second for indexing and then returns what it has. The RPC says how many sessions are still missing (`pending`). Desktop's palette and the TUI ask again until `pending` is 0. `GET /api/session?search=` has no such field: a first cold query from Home, the CLI or iOS can lack content matches, and repeating the search a few seconds later returns them.
+
+## For native clients (iOS)
+
+Use the existing list route; there is no iOS-only endpoint.
+
+```
+GET /api/session?parentID=null&archived=false&limit=50&search=handshake&project=<projectID>
+```
+
+- Response: `{ "data": [SessionInfo...], "cursor": { "previous": string | null, "next": string | null } }`, newest first. A session matches by title or by message text.
+- Scope: `project` (optionally with `subpath`) or `directory`; omit both for every project. Scope is applied before `limit`.
+- Limits: content matches are capped at 500 sessions per search; a cursor repeats the search, so pages agree while a search finds at most 500 sessions.
+- Fallback: with the plugin absent or the config set to `titles` the same call returns title matches only. Read the mode with the `opencode.session-search` `settings` RPC if the UI should say so.
+- Cold index: see above; treat an empty first result as possibly incomplete and offer a retry.
