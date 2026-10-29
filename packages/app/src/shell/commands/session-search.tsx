@@ -4,7 +4,12 @@ import { useGlobal } from "@/runtime/server/runtime"
 import { useLanguage } from "@/runtime/i18n/language"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { useTabs } from "@/shell/tabs/tabs"
-import { createKnownServerSessions, createServerSessionEntries, type CommandPaletteEntry } from "./palette"
+import {
+  createKnownServerSessions,
+  createServerSessionEntries,
+  loadServerSessions,
+  type CommandPaletteEntry,
+} from "./palette"
 import { CommandPaletteView } from "./dialog"
 
 const RECENT_LIMIT = 10
@@ -28,8 +33,7 @@ export function DialogSessionSearch() {
       known: createKnownServerSessions(ctx),
       apply: ctx.data.session.apply,
       projects: ctx.projects.list,
-      load: (search, signal) =>
-        ctx.sdk.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal }),
+      load: (search, signal) => loadServerSessions(ctx.sdk.api, search, signal),
       get: (sessionID, signal) => ctx.sdk.api.session.get({ sessionID }, { signal }),
       untitled: () => language.t("command.session.new"),
       category: () => language.t("command.category.session"),

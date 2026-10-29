@@ -1,6 +1,21 @@
 export * as SessionStore from "./store.js"
 
-import { and, asc, desc, eq, gt, isNotNull, isNull, like, lt, notInArray, or, sql, type SQL } from "drizzle-orm"
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Project } from "@opencode/schema/project"
 import { Workspace } from "@opencode/schema/workspace"
@@ -40,6 +55,26 @@ const ListAllInput = Schema.Struct(ListInputBase)
 export const ListInput = Schema.Union([ListDirectoryInput, ListProjectInput, ListAllInput])
 export type ListInput = typeof ListInput.Type
 
+/** The Session filters shared by list and search: everything but the search text, order, and paging. */
+export type Filter = DistributiveOmit<ListInput, "search" | "limit" | "order" | "anchor">
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
+export function filters(input: Filter) {
+  const conditions: SQL[] = []
+  if ("directory" in input) conditions.push(eq(SessionTable.directory, input.directory))
+  if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
+  if ("project" in input) conditions.push(eq(SessionTable.project_id, input.project))
+  if ("project" in input && input.subpath !== undefined) conditions.push(eq(SessionTable.path, input.subpath))
+  if (input.parentID !== undefined)
+    conditions.push(
+      input.parentID === null ? isNull(SessionTable.parent_id) : eq(SessionTable.parent_id, input.parentID),
+    )
+  if (input.archived !== undefined)
+    conditions.push(input.archived ? isNotNull(SessionTable.time_archived) : isNull(SessionTable.time_archived))
+  return conditions
+}
+
 export type MessagesInput = {
   sessionID: Session.ID
   limit?: number
@@ -53,7 +88,8 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
-  readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
+  /** With `search`, a Session matches by title or by being one of `matches`, such as full-text search results. */
+  readonly list: (input?: ListInput & { readonly matches?: ReadonlyArray<Session.ID> }) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly message: (
@@ -147,18 +183,11 @@ const layer = Layer.effect(
         const requestedOrder = input.order ?? "desc"
         const order = direction === "previous" ? (requestedOrder === "asc" ? "desc" : "asc") : requestedOrder
         const sortColumn = SessionTable.time_updated
-        const conditions: SQL[] = []
-        if ("directory" in input) conditions.push(eq(SessionTable.directory, input.directory))
-        if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
-        if ("project" in input) conditions.push(eq(SessionTable.project_id, input.project))
-        if ("project" in input && input.subpath !== undefined) conditions.push(eq(SessionTable.path, input.subpath))
-        if (input.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
-        if (input.parentID !== undefined)
-          conditions.push(
-            input.parentID === null ? isNull(SessionTable.parent_id) : eq(SessionTable.parent_id, input.parentID),
-          )
-        if (input.archived !== undefined)
-          conditions.push(input.archived ? isNotNull(SessionTable.time_archived) : isNull(SessionTable.time_archived))
+        const conditions = filters(input)
+        if (input.search) {
+          const title = like(SessionTable.title, `%${input.search}%`)
+          conditions.push(input.matches?.length ? or(title, inArray(SessionTable.id, [...input.matches]))! : title)
+        }
         if (input.anchor) {
           conditions.push(
             order === "asc"

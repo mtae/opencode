@@ -28,6 +28,8 @@ import type {
   SessionListOutput,
   SessionStatsInput,
   SessionStatsOutput,
+  SessionSearchInput,
+  SessionSearchOutput,
   SessionCreateInput,
   SessionCreateOutput,
   SessionImportInput,
@@ -434,6 +436,21 @@ const EndpointSessionStats = (raw: RawClient["server.session"]) => (input?: Sess
     ),
   )
 
+const EndpointSessionSearch = (raw: RawClient["server.session"]) => (input: SessionSearchInput) =>
+  preserveEffect<SessionSearchOutput>()(
+    raw["session.search"]({
+      query: {
+        query: input["query"],
+        limit: input["limit"],
+        parentID: input["parentID"],
+        archived: input["archived"],
+        directory: input["directory"],
+        project: input["project"],
+        subpath: input["subpath"],
+      },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const EndpointSessionCreate = (raw: RawClient["server.session"]) => (input?: SessionCreateInput) =>
   preserveEffect<SessionCreateOutput>()(
     raw["session.create"]({
@@ -811,6 +828,7 @@ const EndpointSessionView = (raw: RawClient["server.session"]) => (input: Sessio
 const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   list: EndpointSessionList(raw),
   stats: EndpointSessionStats(raw),
+  search: EndpointSessionSearch(raw),
   create: EndpointSessionCreate(raw),
   import: EndpointSessionImport(raw),
   export: EndpointSessionExport(raw),

@@ -10,8 +10,8 @@ import type { RelativePath } from "@opencode/schema/schema"
 import type { Money } from "@opencode/schema/money"
 import type { Model } from "@opencode/schema/model"
 import type { DateTime } from "effect"
-import type { Permission } from "@opencode/schema/permission"
 import type { SessionMessage } from "@opencode/schema/session-message"
+import type { Permission } from "@opencode/schema/permission"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { AgentAttachment } from "@opencode/schema/prompt"
@@ -211,6 +211,31 @@ export type SessionStatsOutput = {
   }>
 }
 export type SessionStatsOperation<E = never> = (input?: SessionStatsInput) => Effect.Effect<SessionStatsOutput, E>
+
+export type SessionSearchInput = {
+  readonly query: string
+  readonly limit?: number | undefined
+  readonly parentID?: Session.ID | null | undefined
+  readonly archived?: boolean | undefined
+  readonly directory?: AbsolutePath | undefined
+  readonly project?: Project.ID | undefined
+  readonly subpath?: RelativePath | undefined
+}
+export type SessionSearchOutput = {
+  readonly data: ReadonlyArray<{
+    readonly hits: number
+    readonly match?:
+      | {
+          readonly messageID?: SessionMessage.ID | undefined
+          readonly source: "title" | "user" | "assistant" | "synthetic" | "shell" | "tool"
+          readonly snippet: ReadonlyArray<{ readonly text: string; readonly highlight: boolean }>
+        }
+      | undefined
+    readonly session: Session.Info
+  }>
+  readonly pending: number
+}
+export type SessionSearchOperation<E = never> = (input: SessionSearchInput) => Effect.Effect<SessionSearchOutput, E>
 
 export type SessionCreateInput = {
   readonly id?: Session.ID | undefined
@@ -1326,6 +1351,7 @@ export type SessionViewOperation<E = never> = (input: SessionViewInput) => Effec
 export interface SessionApi<E = never> {
   readonly list: SessionListOperation<E>
   readonly stats: SessionStatsOperation<E>
+  readonly search: SessionSearchOperation<E>
   readonly create: SessionCreateOperation<E>
   readonly import: SessionImportOperation<E>
   readonly export: SessionExportOperation<E>

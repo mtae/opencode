@@ -1,6 +1,6 @@
-import { createMemo, createResource, createSignal, onMount, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import path from "path"
-import type { SessionInfo } from "@opencode/client"
+import type { SessionInfo, SessionSearchMatch } from "@opencode/client"
 import { Project } from "@opencode/schema/project"
 import { TextAttributes, type RGBA } from "@opentui/core"
 import { DIALOG_LIST_INSET, useDialog } from "../ui/dialog"
@@ -49,39 +49,80 @@ export function DialogSessionList() {
     activeLocation.ref ??
     data.location.default()
 
-  const [searchResults, { mutate: setSearchResults }] = createResource(
+  // Each fetch aborts the one before it, so the server drops a search nobody will read.
+  const inflight: { controller?: AbortController } = {}
+  onCleanup(() => inflight.controller?.abort())
+  const [searchResults, { mutate: setSearchResults, refetch: refetchSearch }] = createResource(
     () => ({
       query: search().trim(),
       allProjects: allProjects(),
       location: pickerLocation(),
     }),
     async ({ query, allProjects, location }) => {
+      inflight.controller?.abort()
+      const controller = new AbortController()
+      inflight.controller = controller
+      const signal = controller.signal
       try {
         if (!data.location.info(location)) await data.location.sync(location)
         const current = data.location.info(location)
         if (!current) throw new Error("Location unavailable")
-        const response = await client.api.session.list({
-          ...(allProjects
-            ? {}
-            : current.project.id === Project.ID.global
-              ? { directory: current.directory }
-              : {
-                  project: current.project.id,
-                  subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
-                }),
-          ...(query ? { search: query } : {}),
-          limit: 50,
-          order: "desc",
-          parentID: null,
-        })
-        return { query, allProjects, sessions: response.data, error: undefined }
+        const scope = allProjects
+          ? {}
+          : current.project.id === Project.ID.global
+            ? { directory: current.directory }
+            : {
+                project: current.project.id,
+                subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
+              }
+        if (query) {
+          const response = await client.api.session.search({ ...scope, query, limit: 50, parentID: null }, { signal })
+          return {
+            query,
+            allProjects,
+            sessions: response.data.map((result) => result.session),
+            matches: new Map(
+              response.data.flatMap((result) =>
+                result.match && result.match.source !== "title" ? [[result.session.id, result.match]] : [],
+              ),
+            ),
+            pending: response.pending,
+            error: undefined,
+          }
+        }
+        const response = await client.api.session.list(
+          { ...scope, limit: 50, order: "desc", parentID: null },
+          { signal },
+        )
+        return {
+          query,
+          allProjects,
+          sessions: response.data,
+          matches: new Map<string, SessionSearchMatch>(),
+          pending: 0,
+          error: undefined,
+        }
       } catch (error) {
         // A transient transport failure must degrade search, not crash the TUI
         // through the root ErrorBoundary when the errored resource is read.
-        return { query, allProjects, sessions: [] as SessionInfo[], error }
+        return {
+          query,
+          allProjects,
+          sessions: [] as SessionInfo[],
+          matches: new Map<string, SessionSearchMatch>(),
+          pending: 0,
+          error,
+        }
       }
     },
   )
+
+  // Sessions still being indexed are missing from content matches; search again once the server has caught up.
+  createEffect(() => {
+    if (!searchResults.latest?.pending) return
+    const timer = setTimeout(() => void refetchSearch(), 1000)
+    onCleanup(() => clearTimeout(timer))
+  })
 
   const currentSessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
   const localSessions = createMemo(() => {
@@ -118,6 +159,7 @@ export function DialogSessionList() {
         message: query ? "Could not search sessions. Change the search to try again." : "Could not load sessions.",
         error: true,
       }
+    if (query && result?.pending) return { message: `Indexing ${result.pending} sessions…`, error: false }
     return { message: query ? "No sessions found" : "No sessions available", error: false }
   })
 
@@ -150,6 +192,8 @@ export function DialogSessionList() {
     const pinnedSet = new Set(pinned)
     const slotByID = new Map(local.session.slots().map((sessionID, index) => [sessionID, index + 1]))
 
+    const query = filter().trim()
+    const matches = query && query === searchResults.latest?.query ? searchResults.latest.matches : undefined
     const option = (session: SessionInfo, category: string) => {
       const directory = session.location.directory
       const project = data.project.get(session.projectID)
@@ -162,6 +206,7 @@ export function DialogSessionList() {
       const slot = sessionTabs.enabled() ? undefined : slotByID.get(session.id)
       const deleting = toDelete() === session.id
       const attention = sessionTabs.status(session.id).attention
+      const match = matches?.get(session.id)
       return {
         title: deleting
           ? `Press ${shortcuts.get("session.delete")} again to confirm`
@@ -169,6 +214,7 @@ export function DialogSessionList() {
         value: session.id,
         category,
         footer,
+        details: match ? [snippetLine(match)] : undefined,
         bg: deleting ? theme.background.action.destructive.focused : undefined,
         fg: deleting ? theme.text.action.destructive.focused : undefined,
         gutter: sessionStatusGutter(
@@ -185,6 +231,8 @@ export function DialogSessionList() {
     const remaining = sessions()
       .filter((session) => !session.parentID && !pinnedSet.has(session.id))
       .map((session) => {
+        // Matches keep their rank order instead of being grouped by day.
+        if (matches) return option(session, "Matches")
         const date = new Date(session.time.updated).toDateString()
         return option(session, date === today ? "Today" : date)
       })
@@ -296,6 +344,16 @@ export function DialogSessionList() {
       ]}
     />
   )
+}
+
+// Starts the line shortly before the first matched term so narrow rows still show it.
+function snippetLine(match: SessionSearchMatch) {
+  const text = match.snippet.map((fragment) => fragment.text).join("")
+  const first = match.snippet.findIndex((fragment) => fragment.highlight)
+  const offset = match.snippet.slice(0, Math.max(0, first)).reduce((total, fragment) => total + fragment.text.length, 0)
+  if (offset <= 24) return text
+  // Drop the partial word the cut lands in.
+  return "…" + text.slice(offset - 24, offset).replace(/^\S*\s+/, "") + text.slice(offset)
 }
 
 function quickSwitchRange(first: string, last: string) {

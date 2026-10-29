@@ -53,9 +53,10 @@ describe("command palette sessions", () => {
             load: async (text) => {
               searches.push(text)
 
-              return {
-                data: [session, { ...session, id: "archived-session", time: { ...session.time, archived: 3 } }],
-              }
+              return [
+                { session },
+                { session: { ...session, id: "archived-session", time: { ...session.time, archived: 3 } } },
+              ]
             },
             get: async (sessionID) => {
               gets.push(sessionID)
@@ -102,7 +103,7 @@ describe("command palette sessions", () => {
           const search = createServerSessionEntries({
             server: ServerConnection.Key.make("selected-server"),
             projects: () => [project],
-            load: async () => ({ data: [] }),
+            load: async () => [],
             get: async (sessionID) => {
               gets.push(sessionID)
 
@@ -122,6 +123,44 @@ describe("command palette sessions", () => {
     expect(result).toMatchObject([{ sessionID: exact.id, title: exact.title }])
   })
 
+  test("describes a conversation match with the excerpt around it", async () => {
+    const result = await new Promise<Awaited<ReturnType<ReturnType<typeof createServerSessionEntries>>>>(
+      (resolve, reject) => {
+        createRoot((dispose) => {
+          const search = createServerSessionEntries({
+            server: ServerConnection.Key.make("selected-server"),
+            projects: () => [project],
+            load: async () => [
+              {
+                session,
+                match: {
+                  source: "user",
+                  snippet: [
+                    { text: "We discussed this at length yesterday: rotate the ", highlight: false },
+                    { text: "frobnicator", highlight: true },
+                    { text: " keys weekly", highlight: false },
+                  ],
+                },
+              },
+              { session: { ...session, id: "session-title" }, match: { source: "title", snippet: [] } },
+            ],
+            get: async () => session,
+            untitled: () => "Untitled",
+            category: () => "Sessions",
+            recentCategory: () => "Recent sessions",
+          })
+
+          search("frobnicator").then(resolve, reject).finally(dispose)
+        })
+      },
+    )
+
+    expect(result.map((entry) => entry.description)).toEqual([
+      "…yesterday: rotate the frobnicator keys weekly",
+      project.name,
+    ])
+  })
+
   test("matches known and loaded sessions synchronously while remote search is pending", async () => {
     const server = ServerConnection.Key.make("selected-server")
 
@@ -138,7 +177,7 @@ describe("command palette sessions", () => {
           server,
           known: () => [session],
           projects: () => [project],
-          load: async () => ({ data: [remote] }),
+          load: async () => [{ session: remote }],
           get: async () => session,
           untitled: () => "Untitled",
           category: () => "Session",
