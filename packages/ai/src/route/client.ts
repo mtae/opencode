@@ -422,7 +422,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
           request,
           endpoint: routeInput.endpoint,
           auth: routeInput.auth ?? Auth.none,
-          encodeBody: ProviderShared.encodeJson,
+          encodeBody: ProviderShared.encodeJsonBytes,
           middleware: options?.http,
           webSocket: options?.webSocket,
         }),

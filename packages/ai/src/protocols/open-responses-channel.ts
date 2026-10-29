@@ -179,7 +179,7 @@ export const transport = <Body>(options: Options): Transport<Body, Prepared, str
           http: {
             request: ProviderShared.jsonPost({
               url: parts.url,
-              body: parts.bodyText,
+              body: parts.body,
               headers: parts.headers,
               encoding: input.request.http?.encoding,
             }),

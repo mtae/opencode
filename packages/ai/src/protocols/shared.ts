@@ -19,9 +19,9 @@ import {
   type ToolEntry,
   type ToolResultPart,
 } from "../schema/index.js"
-import { Json, decodeJson, encodeJson } from "../utils/json.js"
+import { Json, decodeJson, encodeJson, encodeJsonBytes } from "../utils/json.js"
 import { isRecord } from "../utils/record.js"
-export { Json, decodeJson, encodeJson, isRecord }
+export { Json, decodeJson, encodeJson, encodeJsonBytes, isRecord }
 
 const isJson = Schema.is(Schema.Json)
 export const JsonObject = Schema.Record(Schema.String, Schema.Unknown)
@@ -418,15 +418,14 @@ export const validateWith =
 /**
  * Build an HTTP POST with a JSON body. Sets `content-type: application/json`
  * automatically after caller-supplied headers so routes cannot accidentally
- * send JSON with a stale content type. The body is passed pre-encoded so
- * routes can choose between
- * `Schema.encodeSync(payload)` and `ProviderShared.encodeJson(payload)`.
+ * send JSON with a stale content type. The body is passed pre-encoded, as
+ * text or as UTF-8 bytes (`ProviderShared.encodeJsonBytes(payload)`).
  * A `zstd` or `gzip` encoding compresses the body and sets `content-encoding`;
  * it falls back to plain JSON when the runtime has no zlib.
  */
 export const jsonPost = (input: {
   readonly url: string
-  readonly body: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers?: Headers.Input
   readonly encoding?: RequestEncoding
 }) => {
@@ -435,7 +434,9 @@ export const jsonPost = (input: {
   if (!compressed)
     return HttpClientRequest.post(input.url).pipe(
       HttpClientRequest.setHeaders(headers),
-      HttpClientRequest.bodyText(input.body, "application/json"),
+      typeof input.body === "string"
+        ? HttpClientRequest.bodyText(input.body, "application/json")
+        : HttpClientRequest.bodyUint8Array(input.body, "application/json"),
     )
   return HttpClientRequest.post(input.url).pipe(
     HttpClientRequest.setHeaders(Headers.set(headers, "content-encoding", compressed.encoding)),
@@ -443,14 +444,14 @@ export const jsonPost = (input: {
   )
 }
 
-function compressBody(text: string, encoding: RequestEncoding | undefined) {
+function compressBody(body: string | Uint8Array<ArrayBuffer>, encoding: RequestEncoding | undefined) {
   if (encoding === undefined || encoding === "none") return undefined
   // Looked up at call time instead of imported: a runtime without node:zlib or its zstd export
   // (browsers, older Node, some workerd setups) sends plain JSON rather than failing to load this module.
   const zlib = globalThis.process?.getBuiltinModule?.("node:zlib")
   try {
-    const body = encoding === "zstd" ? zlib?.zstdCompressSync?.(text) : zlib?.gzipSync(text)
-    return body && { encoding, body }
+    const compressed = encoding === "zstd" ? zlib?.zstdCompressSync?.(body) : zlib?.gzipSync(body)
+    return compressed && { encoding, body: compressed }
   } catch {
     // Compression is an optimization, so a failure sends plain JSON instead of failing the request.
     return undefined

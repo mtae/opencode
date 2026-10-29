@@ -22,7 +22,7 @@ export type JsonRequestInput<Body> = TransportPrepareInput<Body>
 export interface JsonRequestParts<Body = unknown> {
   readonly url: string
   readonly jsonBody: Body | Record<string, unknown>
-  readonly bodyText: string
+  readonly body: string | Uint8Array<ArrayBuffer>
   readonly headers: Headers.Headers
 }
 
@@ -32,12 +32,16 @@ export interface HttpPrepared<Frame> {
   readonly middleware?: HttpMiddleware
 }
 
-const bodyWithOverlay = <Body>(body: Body, request: LLMRequest, encodeBody: (body: Body) => string) =>
+const bodyWithOverlay = <Body>(
+  body: Body,
+  request: LLMRequest,
+  encodeBody: (body: Body) => string | Uint8Array<ArrayBuffer>,
+) =>
   Effect.gen(function* () {
-    if (request.http?.body === undefined) return { jsonBody: body, bodyText: encodeBody(body) }
+    if (request.http?.body === undefined) return { jsonBody: body, encoded: encodeBody(body) }
     if (ProviderShared.isRecord(body)) {
       const overlaid = mergeJsonRecords(body, request.http.body) ?? {}
-      return { jsonBody: overlaid, bodyText: ProviderShared.encodeJson(overlaid) }
+      return { jsonBody: overlaid, encoded: ProviderShared.encodeJsonBytes(overlaid) }
     }
     return yield* ProviderShared.invalidRequest("http.body can only overlay JSON object request bodies")
   })
@@ -54,13 +58,13 @@ export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
       request: input.request,
       method: "POST",
       url,
-      body: body.bodyText,
+      body: body.encoded,
       headers: Headers.fromInput({
         ...input.headers?.({ request: input.request }),
         ...input.request.http?.headers,
       }),
     })
-    return { url, jsonBody: body.jsonBody, bodyText: body.bodyText, headers }
+    return { url, jsonBody: body.jsonBody, body: body.encoded, headers }
   })
 
 export interface HttpJsonInput<_Body, Frame> {
@@ -81,7 +85,7 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
       const parts = yield* jsonRequestParts({ ...prepareInput })
       const request = ProviderShared.jsonPost({
         url: parts.url,
-        body: parts.bodyText,
+        body: parts.body,
         headers: parts.headers,
         encoding: prepareInput.request.http?.encoding,
       })
