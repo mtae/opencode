@@ -222,6 +222,7 @@ SDK icon fields take an `IconName` from `@opencode/plugin/gui`: the names of the
 | [`SettingsPage`](../plugin/src/gui/registries.ts) | window  | A settings page, a section on a host page, or rows in a host section                                                                                                |
 | [`Server`](../plugin/src/gui/registries.ts)       | window  | A source of servers, such as SSH hosts                                                                                                                              |
 | [`LinkHandler`](../plugin/src/gui/registries.ts)  | window  | Opens local links, such as file paths in messages, and says whether their target exists                                                                             |
+| [`SessionSearch`](../plugin/src/gui/registries.ts) | window  | A source of extra matches for the Home session search, such as a full-text index                                                                                    |
 | [`TitlebarItem`](../plugin/src/gui/registries.ts) | window  | A pill in the titlebar or the tabs footer                                                                                                                           |
 | [`ComposerPill`](../plugin/src/gui/registries.ts) | window  | A pill in the row above a session's composer, optionally opening a menu of rows or a popover of your own content                                                    |
 | [`Slot`](../plugin/src/gui/registries.ts)         | window  | Content for `window.bottom`, `session.header`, `session.location.menu`, `session.panel.end`; built-ins also fill `session.location.workspace`, `session.location.branch.menu` and `session.location.path.menu` through `BuiltinSlot` |
@@ -679,6 +680,7 @@ export const builtins = compose({
   "microsoft-office": microsoftOffice,
   sources,
   goal,
+  "session-search": sessionSearch,
 })
 ```
 
@@ -704,6 +706,7 @@ export const builtins = compose({
   "microsoft-office": { ...microsoftOffice, windowEntry: eager(microsoftOfficeRenderer) },
   sources: { ...sources, windowEntry: eager(sourcesRenderer) },
   goal: { ...goal, windowEntry: eager(goalRenderer) },
+  "session-search": { ...sessionSearch, windowEntry: eager(sessionSearchRenderer) },
 })
 ```
 
