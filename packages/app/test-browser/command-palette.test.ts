@@ -71,8 +71,8 @@ describe("command palette sessions", () => {
           const second = search("palette session")
           Promise.all([first, second])
             .then(([cancelled, entries]) => {
-              expect(cancelled).toEqual([])
-              resolve(entries)
+              expect(cancelled).toEqual({ items: [] })
+              resolve(entries.items)
             })
             .catch(reject)
             .finally(dispose)
@@ -113,7 +113,9 @@ describe("command palette sessions", () => {
             recentCategory: () => "Recent sessions",
           })
 
-          search(exact.id).then(resolve, reject).finally(dispose)
+          search(exact.id)
+            .then((answer) => resolve(answer.items), reject)
+            .finally(dispose)
         })
       },
     )
@@ -146,13 +148,13 @@ describe("command palette sessions", () => {
         const waiting = new AbortController()
         const first = sessions.search("palette", waiting.signal)
         waiting.abort()
-        expect(await first).toEqual([])
+        expect(await first).toEqual({ items: [] })
 
         const fetching = new AbortController()
         const second = sessions.search("palette", fetching.signal)
         await fetched.promise
         fetching.abort()
-        expect(await second).toEqual([])
+        expect(await second).toEqual({ items: [] })
         expect(signals).toHaveLength(1)
         expect(signals[0]?.aborted).toBe(true)
       } finally {

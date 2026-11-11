@@ -29,6 +29,7 @@ import {
   INITIAL_SESSION_SOURCE_STATE,
   PALETTE_SESSION_DEBOUNCE_MS,
   transitionSessionSource,
+  type PaletteSourceAnswer,
   type SessionSourceEffect,
   type SessionSourceEvent,
 } from "./search-machine"
@@ -274,7 +275,10 @@ export function createServerSessionEntries(props: {
   /** Hides sessions deleted since they were loaded. */
   apply?: (sessions: SessionInfo[]) => SessionInfo[]
   projects: () => Project[]
-  load: (search: string, signal: AbortSignal) => Promise<{ data: SessionInfo[] }>
+  load: (
+    search: string,
+    signal: AbortSignal,
+  ) => Promise<{ data: SessionInfo[]; experimental?: { indexing?: true | null } | null }>
   get: (sessionID: string, signal: AbortSignal) => Promise<SessionInfo>
   untitled: () => string
   category: () => string
@@ -286,7 +290,7 @@ export function createServerSessionEntries(props: {
   const runs = new Map<
     number,
     {
-      result: PromiseWithResolvers<CommandPaletteEntry[]>
+      result: PromiseWithResolvers<PaletteSourceAnswer>
       timer: ReturnType<typeof setTimeout>
       controller?: AbortController
       unlink?: () => void
@@ -314,7 +318,7 @@ export function createServerSessionEntries(props: {
   function run(effect: SessionSourceEffect) {
     if (effect.type === "debounce.start") {
       runs.set(effect.attempt, {
-        result: Promise.withResolvers<CommandPaletteEntry[]>(),
+        result: Promise.withResolvers<PaletteSourceAnswer>(),
         timer: setTimeout(() => dispatch({ type: "debounce.fired", attempt: effect.attempt }), effect.delayMs),
       })
 
@@ -331,8 +335,8 @@ export function createServerSessionEntries(props: {
       const search = effect.query
       void Promise.all([
         Promise.try(() => props.load(search, controller.signal)).then(
-          (result) => ({ items: result.data, failed: false }),
-          () => ({ items: [], failed: true }),
+          (result) => ({ items: result.data, failed: false, indexing: !!result.experimental?.indexing }),
+          () => ({ items: [], failed: true, indexing: false }),
         ),
         looksLikeSessionID(search)
           ? Promise.try(() => props.get(search, controller.signal)).then(
@@ -347,6 +351,7 @@ export function createServerSessionEntries(props: {
             : {
                 type: "fetch.succeeded",
                 attempt: effect.attempt,
+                indexing: listed.indexing,
                 sessions: [
                   ...new Map([...exact, ...listed.items].map((session) => [session.id, session] as const)).values(),
                 ],
@@ -363,14 +368,17 @@ export function createServerSessionEntries(props: {
 
     if (effect.type === "attempt.cancel") {
       current.controller?.abort()
-      current.result.resolve([])
+      current.result.resolve({ items: [] })
 
       return
     }
 
     // The local collection owns the recent rows, including newly loaded ones.
     if (effect.type === "attempt.resolve")
-      return current.result.resolve(effect.query ? entries([...effect.sessions], effect.query) : [])
+      return current.result.resolve({
+        items: effect.query ? entries([...effect.sessions], effect.query) : [],
+        indexing: effect.indexing,
+      })
 
     current.result.reject(effect.error)
   }
@@ -404,8 +412,8 @@ export function createServerSessionEntries(props: {
   }
 
   // A superseded or aborted search answers with no results.
-  const search = (text: string, signal?: AbortSignal): Promise<CommandPaletteEntry[]> => {
-    if (signal?.aborted) return Promise.resolve([])
+  const search = (text: string, signal?: AbortSignal): Promise<PaletteSourceAnswer> => {
+    if (signal?.aborted) return Promise.resolve({ items: [] })
     const query = text.trim()
 
     // Typed searches wait for a pause; an empty query lists recent sessions right away.
@@ -413,7 +421,7 @@ export function createServerSessionEntries(props: {
     const current = untrack(sourceState)
     const started = current.status === "debouncing" ? runs.get(current.attempt) : undefined
 
-    if (current.status !== "debouncing" || !started) return Promise.resolve([])
+    if (current.status !== "debouncing" || !started) return Promise.resolve({ items: [] })
     const attempt = current.attempt
 
     if (signal) {

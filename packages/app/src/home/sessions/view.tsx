@@ -85,6 +85,8 @@ export type HomeSessionsViewProps = {
   searchResults: HomeSessionRecord[]
   searchActive: string
   searchNoResultsLabel: string
+  /** The server is still indexing, so its matches may be incomplete; `incomplete` once Home stops asking again. */
+  searchIndexing: "refreshing" | "incomplete" | undefined
   titleOpacity: (id: HomeSessionGroup["id"]) => number
   isOpenTab: (record: HomeSessionRecord) => boolean
   onCreateSession: () => void
@@ -114,6 +116,7 @@ export type HomeSessionsViewProps = {
   onSearchClose: () => void
   onSearchMove: (delta: number) => void
   onSearchSelectActive: () => void
+  onSearchRetry: () => void
   onSearchHighlight: (record: HomeSessionRecord) => void
   onSearchSelect: (record: HomeSessionRecord, options?: OpenSessionOptions) => void
 }
@@ -474,6 +477,29 @@ function HomeSessionSearch(
                   </Show>
                 </Show>
               </div>
+              <Show when={props.searchIndexing}>
+                {(indexing) => (
+                  <div
+                    data-slot="home-session-search-indexing"
+                    role="status"
+                    class={`
+                      flex items-center gap-2 px-[18px] pb-3 text-[13px] leading-4 tracking-[-0.04px]
+                      text-v2-text-text-muted [font-weight:440]
+                    `}
+                  >
+                    <span class="min-w-0 flex-1">
+                      {props.language.t(
+                        indexing() === "refreshing" ? "session.search.indexing" : "session.search.incomplete",
+                      )}
+                    </span>
+                    <Show when={indexing() === "incomplete"}>
+                      <Button variant="ghost" size="small" onClick={props.onSearchRetry}>
+                        {props.language.t("common.retry")}
+                      </Button>
+                    </Show>
+                  </div>
+                )}
+              </Show>
             </div>
           </div>
         </Show>

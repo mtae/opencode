@@ -119,7 +119,7 @@ describe("palette search machine", () => {
     )
 
     expect(selectPaletteSearchSources(result.state)).toEqual([
-      { status: "loading", attempt: 3, settled: { query: "ab", items: [local] }, seen: [local] },
+      { status: "loading", attempt: 3, round: 0, settled: { query: "ab", items: [local] }, seen: [local] },
     ])
     expect(search([{ type: "disposed" }], result.state)).toEqual({
       state: { status: "disposed" },
