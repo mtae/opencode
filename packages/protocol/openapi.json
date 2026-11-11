@@ -24915,6 +24915,31 @@
               }
             },
             "additionalProperties": false
+          },
+          "experimental": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "indexing": {
+                    "anyOf": [
+                      {
+                        "type": "boolean",
+                        "enum": [true]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Experimental: may change without compatibility guarantees. With a search, indexing is true while the session search index is still being built or updated, so repeating the same search may return more sessions. Absent otherwise."
           }
         },
         "required": ["data", "cursor"],
