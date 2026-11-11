@@ -1,4 +1,4 @@
-import { createMemo, createResource, createSignal, onMount, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import path from "path"
 import type { SessionInfo } from "@opencode/client"
 import { Project } from "@opencode/schema/project"
@@ -24,7 +24,24 @@ import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { projectName } from "../util/project"
 import { useLocation } from "../context/location"
 
-export function DialogSessionList() {
+/**
+ * Delays before the same search is asked again while the server reports `experimental.indexing`; about 45 seconds in
+ * all. After the last one the list says it may be incomplete and offers to search again.
+ */
+export const SEARCH_INDEXING_RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 15_000]
+
+type SessionSearchResult = {
+  query: string
+  allProjects: boolean
+  sessions: SessionInfo[]
+  /** The server was still indexing when it answered this search. */
+  indexing: boolean
+  round: number
+  error: unknown
+}
+
+export function DialogSessionList(props: { indexingRetryMs?: readonly number[] } = {}) {
+  const retryDelays = props.indexingRetryMs ?? SEARCH_INDEXING_RETRY_MS
   const dialog = useDialog()
   const route = useRoute()
   const data = useData()
@@ -49,40 +66,77 @@ export function DialogSessionList() {
     activeLocation.ref ??
     data.location.default()
 
-  const [searchResults, { mutate: setSearchResults }] = createResource(
+  // One request at a time: a new search, scope or refresh aborts the previous one, and Solid drops its late answer.
+  let request: AbortController | undefined
+  let retry: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => {
+    clearTimeout(retry)
+    request?.abort()
+  })
+
+  const [searchResults, { mutate: setSearchResults, refetch }] = createResource(
     () => ({
       query: search().trim(),
       allProjects: allProjects(),
       location: pickerLocation(),
     }),
-    async ({ query, allProjects, location }) => {
+    // `refetching` carries the refresh round while the index builds; a new search or scope starts again at 0.
+    async ({ query, allProjects, location }, info): Promise<SessionSearchResult> => {
+      request?.abort()
+      const controller = new AbortController()
+      request = controller
+      const round = typeof info.refetching === "number" ? info.refetching : 0
+      const previous = round > 0 ? searchResults.latest : undefined
       try {
         if (!data.location.info(location)) await data.location.sync(location)
         const current = data.location.info(location)
         if (!current) throw new Error("Location unavailable")
-        const response = await client.api.session.list({
-          ...(allProjects
-            ? {}
-            : current.project.id === Project.ID.global
-              ? { directory: current.directory }
-              : {
-                  project: current.project.id,
-                  subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
-                }),
-          ...(query ? { search: query } : {}),
-          limit: 50,
-          order: "desc",
-          parentID: null,
-          archived: false,
-        })
-        return { query, allProjects, sessions: response.data, error: undefined }
+        const response = await client.api.session.list(
+          {
+            ...(allProjects
+              ? {}
+              : current.project.id === Project.ID.global
+                ? { directory: current.directory }
+                : {
+                    project: current.project.id,
+                    subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
+                  }),
+            ...(query ? { search: query } : {}),
+            limit: 50,
+            order: "desc",
+            parentID: null,
+            archived: false,
+          },
+          { signal: controller.signal },
+        )
+        const indexing = !!query && !!response.experimental?.indexing
+        return { query, allProjects, sessions: response.data, indexing, round, error: undefined }
       } catch (error) {
+        // A failed refresh keeps the rows already shown and stops refreshing, as when the budget runs out.
+        if (previous && !previous.error) return { ...previous, round: retryDelays.length }
         // A transient transport failure must degrade search, not crash the TUI
         // through the root ErrorBoundary when the errored resource is read.
-        return { query, allProjects, sessions: [] as SessionInfo[], error }
+        return { query, allProjects, sessions: [] as SessionInfo[], indexing: false, round, error }
       }
     },
   )
+
+  // While the index is incomplete, ask the unchanged search again after the next delay. A new answer, search or scope
+  // reruns this and clears the pending timer first.
+  createEffect(() => {
+    clearTimeout(retry)
+    retry = undefined
+    if (searchResults.loading) return
+    const result = searchResults()
+    if (!result?.indexing || result.round >= retryDelays.length) return
+    const round = result.round
+    retry = setTimeout(() => void refetch(round + 1), retryDelays[round])
+  })
+  const indexing = createMemo(() => {
+    const result = searchResults.latest
+    if (!result?.indexing || result.query !== filter().trim() || result.allProjects !== allProjects()) return
+    return result.round < retryDelays.length ? "refreshing" : "stopped"
+  })
 
   const currentSessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
   const localSessions = createMemo(() => {
@@ -221,7 +275,19 @@ export function DialogSessionList() {
         setFilter(query)
         setSearch(query)
       }}
+      footer={
+        <Show when={indexing()}>
+          <text fg={theme.text.feedback.info.base}>
+            {indexing() === "refreshing"
+              ? "Indexing sessions, results may be incomplete…"
+              : "Still indexing, results may be incomplete. ctrl+g searches again."}
+          </text>
+        </Show>
+      }
       bindings={[
+        ...(indexing() === "stopped"
+          ? [{ bind: "ctrl+g", title: "Search sessions again", group: "Dialog", run: () => void refetch(0) }]
+          : []),
         {
           bind: "ctrl+a",
           title: allProjects() ? "Show current directory sessions" : "Show all project sessions",
