@@ -497,9 +497,12 @@ const messageSources = (db: DatabaseService, where: SQL, suffix: SQL = sql``) =>
         'files', CASE WHEN message.type = 'user' THEN json((
           SELECT json_group_array(json(json_patch('{}', json_object(
             'data', '', 'mime', '',
-            'source', json_object('type', file.value ->> '$.source.type', 'uri', substr(file.value ->> '$.source.uri', 1, ${MaxCall})),
-            'name', substr(file.value ->> '$.name', 1, ${MaxCall}),
-            'description', substr(file.value ->> '$.description', 1, ${MaxCall})
+            'source', json_object(
+              'type', message.data ->> (file.fullkey || '.source.type'),
+              'uri', substr(message.data ->> (file.fullkey || '.source.uri'), 1, ${MaxCall})
+            ),
+            'name', substr(message.data ->> (file.fullkey || '.name'), 1, ${MaxCall}),
+            'description', substr(message.data ->> (file.fullkey || '.description'), 1, ${MaxCall})
           ))))
           FROM json_each(message.data, '$.files') AS file
         )) END,
