@@ -153,7 +153,7 @@ const startIn = (db: Db, layout: SessionSearchIndex.Layout) =>
     ? Effect.void
     : Effect.gen(function* () {
         yield* db.run(
-          "CREATE VIRTUAL TABLE session_search USING fts5(title, summary, user_text, assistant_text, content='', tokenize='porter unicode61 remove_diacritics 2')",
+          "CREATE VIRTUAL TABLE session_search USING fts5(title, summary, user_text, assistant_text, content='', tokenize='unicode61 remove_diacritics 2')",
         )
         yield* db
           .insert(KVTable)
@@ -182,7 +182,7 @@ const setVersion = (db: Db, version: number) =>
     .run()
 
 describe("SessionSearchIndex", () => {
-  it.effect("indexes the title once, user text, finished assistant text and completed summaries only", () =>
+  it.effect("indexes titles, text, summaries and bounded audit metadata, never tool output or reasoning", () =>
     Effect.gen(function* () {
       const db = yield* database()
       const compaction = { type: "compaction", reason: "auto", time: { created } } as const
@@ -234,13 +234,15 @@ describe("SessionSearchIndex", () => {
       expect(yield* find(db, "assistantword")).toEqual([id("02")])
       expect(yield* find(db, "inlineword partword")).toEqual([id("03")])
       expect(yield* find(db, "summaryword")).toEqual([id("04")])
-      expect(
-        yield* find(
-          db,
-          "attachmentword reasoningword toolword toolwordinput bash parttool draftword failedword syntheticword systemword skillword",
-        ),
-      ).toEqual([])
-      expect(yield* sources(db)).toEqual([id("01"), id("02"), id("03"), id("04"), sessionA])
+      // Audit metadata, inline and in part rows: attachment names, tool names and inputs, synthetic text.
+      expect(yield* find(db, "attachmentword")).toEqual([id("01")])
+      expect(yield* find(db, "toolwordinput")).toEqual([id("02")])
+      expect(yield* find(db, "parttoolinput")).toEqual([id("03")])
+      expect(yield* find(db, "bash")).toEqual([id("02"), id("03")])
+      expect(yield* find(db, "syntheticword")).toEqual([id("07")])
+      // Tool output (`toolword`, `parttool`), reasoning, unfinished or failed compactions, system and skill text.
+      expect(yield* find(db, "reasoningword toolword parttool draftword failedword systemword skillword")).toEqual([])
+      expect(yield* sources(db)).toEqual([id("01"), id("02"), id("03"), id("04"), id("07"), sessionA])
     }),
   )
 
@@ -433,6 +435,35 @@ describe("SessionSearchIndex", () => {
       yield* setVersion(db, SessionSearchIndex.Version - 1)
       expect(yield* SessionSearchIndex.ensure(db)).toEqual({ supported: true, rebuilt: true, layout: "compact" })
       expect((yield* SessionSearchIndex.status(db)).version).toBe(SessionSearchIndex.Version)
+    }),
+  )
+
+  it.effect("rebuilds a stemmed index, from an older version or under this version number", () =>
+    Effect.gen(function* () {
+      const db = yield* database()
+      yield* addSession(db, sessionA, null)
+      yield* addMessages(db, sessionA, [user("1", "logging the migration")])
+      const stemmed =
+        "CREATE VIRTUAL TABLE session_search USING fts5(title, summary, user_text, assistant_text, content='', contentless_delete=1, tokenize='porter unicode61 remove_diacritics 2')"
+      const ddl = db
+        .get<{ sql: string }>(sql`SELECT sql FROM sqlite_master WHERE name = 'session_search'`)
+        .pipe(Effect.map((row) => row?.sql))
+      const prefix = db
+        .all(sql`SELECT rowid FROM session_search WHERE session_search MATCH '"loggi"*'`)
+        .pipe(Effect.map((rows) => rows.length))
+
+      for (const version of [1, SessionSearchIndex.Version]) {
+        yield* sync(db)
+        // Swap in the donor's stemmed table with every trigger still present.
+        yield* db.run("DROP TABLE session_search")
+        yield* db.run(stemmed)
+        yield* setVersion(db, version)
+        expect(yield* SessionSearchIndex.ensure(db)).toEqual({ supported: true, rebuilt: true, layout: "compact" })
+        expect(yield* ddl).not.toContain("porter")
+        yield* backfill(db)
+        expect(yield* prefix).toBe(1)
+        expect(yield* find(db, "logged")).toEqual([])
+      }
     }),
   )
 

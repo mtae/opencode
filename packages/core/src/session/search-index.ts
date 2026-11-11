@@ -26,8 +26,12 @@ import {
 
 type DatabaseService = Database.Interface["db"]
 
-/** Bump when the columns, tokenizer, triggers or extracted text change, so {@link ensure} rebuilds. */
-export const Version = 1
+/**
+ * Bump when the columns, tokenizer, triggers or extracted text change, so {@link ensure} rebuilds. 2: literal
+ * `unicode61` tokens instead of porter stems (a stemmed index cannot match a partially typed word), and bounded tool
+ * calls, shell commands, attachment names and synthetic notes in the extracted text.
+ */
+export const Version = 2
 
 export type Layout = "compact" | "text"
 
@@ -69,15 +73,18 @@ export const ensure = Effect.fn("SessionSearchIndex.ensure")(function* (db: Data
     Effect.gen(function* () {
       const state = yield* readState(db)
       if (state && state.version > Version) return undefined
-      const present = new Set(
-        (yield* db.all<{ name: string }>(
-          sql`SELECT name FROM sqlite_master WHERE name IN (${list([IndexTable, ...names])})`,
-        )).map((row) => row.name),
+      const present = new Map(
+        (yield* db.all<{ name: string; sql: string | null }>(
+          sql`SELECT name, sql FROM sqlite_master WHERE name IN (${list([IndexTable, ...names])})`,
+        )).map((row) => [row.name, row.sql]),
       )
+      // The stored DDL must be this version's too, so an index with another tokenizer under the same version number
+      // (another build of this index sharing the database) is rebuilt rather than read with the wrong tokens.
       if (
         state?.version === Version &&
         state.layout === layout &&
-        [IndexTable, ...names].every((name) => present.has(name))
+        present.get(IndexTable) === createIndex(IndexTable, layout) &&
+        names.every((name) => present.has(name))
       )
         return false
       for (const name of names) yield* db.run(`DROP TRIGGER IF EXISTS ${name}`)
@@ -286,10 +293,15 @@ const Columns = "title, summary, user_text, assistant_text"
 const Rank = `bm25(${IndexTable})`
 const Word = /[\p{L}\p{M}\p{N}]+/gu
 
+/**
+ * Literal tokens, case- and diacritic-folded, with no stemming: a typed prefix (`loggi*`) must match the stored word
+ * (`logging`), which a porter index stores as its stem (`log`). Morphological variants (`migrate`, `migration`) are
+ * therefore different words; camelCase subwords are still added by {@link SessionSearchText.expand}.
+ */
 const createIndex = (name: string, layout: Layout) =>
-  `CREATE VIRTUAL TABLE ${name} USING fts5(${Columns}, content=''${layout === "compact" ? ", contentless_delete=1" : ""}, tokenize='porter unicode61 remove_diacritics 2')`
+  `CREATE VIRTUAL TABLE ${name} USING fts5(${Columns}, content=''${layout === "compact" ? ", contentless_delete=1" : ""}, tokenize='unicode61 remove_diacritics 2')`
 
-const IndexedTypes = `'user', 'assistant', 'compaction'`
+const IndexedTypes = `'user', 'assistant', 'compaction', 'shell', 'synthetic'`
 const queue = (id: string) => `INSERT INTO session_search_dirty (source_id) VALUES (${id}) ON CONFLICT DO NOTHING;`
 
 const Triggers = {
@@ -431,10 +443,23 @@ const titleDocument = (row: { id: SessionSchema.ID; title: string | null }): Doc
 const decodeMessage = Schema.decodeUnknownOption(Schema.fromJsonString(SessionMessage.Info))
 
 const MaxText = sql.raw(String(SessionSearchText.MaxText))
+const MaxCall = sql.raw(String(SessionSearchText.MaxCall))
 
 /**
- * Indexable messages matching `where`, reduced in SQLite to their searchable fields (each cut to MaxText) so tool
- * output and attachments never reach JS. An assistant is finished once `time.completed` is set. SQLite's JSON
+ * The tool call at `path` of `data`, reduced to its name and its input's string values (each, and together, cut to
+ * MaxCall) under one `text` key. It is shaped as a running call only so the reduced message decodes.
+ */
+const toolCall = (data: SQL, path: SQL) => sql`json_object(
+  'type', 'tool', 'id', '', 'name', coalesce(substr(${data} ->> (${path} || '.name'), 1, ${MaxCall}), ''),
+  'state', json_object('status', 'running', 'metadata', json_object(), 'input', json_object('text', coalesce((
+    SELECT substr(group_concat(substr(input.value, 1, ${MaxCall}), ' '), 1, ${MaxCall})
+    FROM json_tree(${data}, ${path} || '.state.input') AS input WHERE input.type = 'text'
+  ), ''))),
+  'time', json_object('created', 0))`
+
+/**
+ * Indexable messages matching `where`, reduced in SQLite to their searchable fields (text cut to MaxText, tool calls
+ * and attachment names to MaxCall) so tool output, shell output, attachment data and reasoning never reach JS. An assistant is finished once `time.completed` is set. SQLite's JSON
  * functions raise on invalid JSON and would fail the whole batch, so `state` checks the row first (CASE evaluates in
  * order) and elements are read by path from the row rather than parsed one by one. `json_patch` drops nulls so absent
  * fields decode as missing.
@@ -464,22 +489,46 @@ const messageSources = (db: DatabaseService, where: SQL, suffix: SQL = sql``) =>
         'id', message.id,
         'type', message.type,
         'time', json_object('created', message.time_created),
-        'text', CASE WHEN message.type = 'user' THEN substr(message.data ->> '$.text', 1, ${MaxText}) END,
-        'status', CASE WHEN message.type = 'compaction' THEN message.data ->> '$.status' END,
+        'text', CASE
+          WHEN message.type = 'user' THEN substr(message.data ->> '$.text', 1, ${MaxText})
+          WHEN message.type = 'synthetic' THEN CASE WHEN message.data -> '$.metadata.notice' IS NULL
+            THEN substr(message.data ->> '$.text', 1, ${MaxText}) ELSE '' END
+        END,
+        'files', CASE WHEN message.type = 'user' THEN json((
+          SELECT json_group_array(json(json_patch('{}', json_object(
+            'data', '', 'mime', '',
+            'source', json_object('type', file.value ->> '$.source.type', 'uri', substr(file.value ->> '$.source.uri', 1, ${MaxCall})),
+            'name', substr(file.value ->> '$.name', 1, ${MaxCall}),
+            'description', substr(file.value ->> '$.description', 1, ${MaxCall})
+          ))))
+          FROM json_each(message.data, '$.files') AS file
+        )) END,
+        'description', CASE WHEN message.type = 'synthetic' THEN substr(message.data ->> '$.description', 1, ${MaxText}) END,
+        'metadata', CASE WHEN message.type = 'synthetic' THEN json_object('notice', json(message.data -> '$.metadata.notice')) END,
+        'shellID', CASE WHEN message.type = 'shell' THEN message.data ->> '$.shellID' END,
+        'command', CASE WHEN message.type = 'shell' THEN substr(message.data ->> '$.command', 1, ${MaxText}) END,
+        'status', CASE WHEN message.type IN ('compaction', 'shell') THEN message.data ->> '$.status' END,
         'reason', CASE WHEN message.type = 'compaction' THEN message.data ->> '$.reason' END,
         'summary', CASE WHEN message.type = 'compaction' THEN substr(message.data ->> '$.summary', 1, ${MaxText}) END,
         'agent', CASE WHEN message.type = 'assistant' THEN message.data ->> '$.agent' END,
         'model', CASE WHEN message.type = 'assistant' THEN json(message.data -> '$.model') END,
         'content', CASE WHEN message.type = 'assistant' THEN (
-          SELECT json_group_array(json_object('type', 'text', 'text', text)) FROM (
-            SELECT 0 AS origin, part.ordinal AS position, substr(part.data ->> '$.text', 1, ${MaxText}) AS text
+          SELECT json_group_array(json(item)) FROM (
+            SELECT 0 AS origin, part.ordinal AS position, CASE WHEN part.type = 'text'
+              THEN json_object('type', 'text', 'text', substr(part.data ->> '$.text', 1, ${MaxText}))
+              ELSE ${toolCall(sql`part.data`, sql`'$'`)} END AS item
             FROM ${SessionPartTable} AS part
-            WHERE part.session_id = message.session_id AND part.message_id = message.id AND part.type = 'text'
-              AND json_valid(part.data)
+            WHERE part.session_id = message.session_id AND part.message_id = message.id AND json_valid(part.data)
+              AND (part.type = 'text' OR (part.type = 'tool' AND part.data ->> '$.state.status' <> 'streaming'))
             UNION ALL
-            SELECT 1, CAST(content.key AS INTEGER), substr(message.data ->> (content.fullkey || '.text'), 1, ${MaxText})
+            SELECT 1, CAST(content.key AS INTEGER), CASE WHEN message.data ->> (content.fullkey || '.type') = 'text'
+              THEN json_object('type', 'text', 'text', substr(message.data ->> (content.fullkey || '.text'), 1, ${MaxText}))
+              ELSE ${toolCall(sql`message.data`, sql`content.fullkey`)} END
             FROM json_each(message.data, '$.content') AS content
-            WHERE message.data ->> (content.fullkey || '.type') = 'text'
+            WHERE message.data ->> (content.fullkey || '.type') = 'text' OR (
+              message.data ->> (content.fullkey || '.type') = 'tool'
+              AND message.data ->> (content.fullkey || '.state.status') <> 'streaming'
+            )
             ORDER BY origin, position
           )
         ) END

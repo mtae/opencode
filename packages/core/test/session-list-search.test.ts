@@ -21,6 +21,7 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionSearchIndex } from "@opencode/core/session/search-index"
 import { SessionMessageTable, SessionPartTable, SessionTable } from "@opencode/core/session/sql"
 import { Workspace } from "@opencode/core/workspace"
+import { Shell } from "@opencode/schema/shell"
 import { Document, Info } from "@opencode/schema/config"
 import { ConfigExperimental } from "@opencode/schema/config/experimental"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
@@ -172,6 +173,40 @@ const addPartOnlyAssistant = (db: Db, sessionID: string, text: string) =>
       .run()
   })
 
+const nextID = () => SessionMessage.ID.make(`msg_${String(++seq).padStart(4, "0")}`)
+const created = Schema.decodeSync(Schema.DateTimeUtcFromMillis)(1_000)
+
+const addMessage = (db: Db, sessionID: string, message: SessionMessage.Info) => {
+  const { id: _, type, ...data } = encode(message)
+  return db
+    .insert(SessionMessageTable)
+    .values({ id: message.id, session_id: Session.ID.make(sessionID), type, seq, time_created: 1_000, data })
+    .run()
+}
+
+const toolCall = (callID: string, name: string, input: Record<string, unknown>, output: string) =>
+  SessionMessage.AssistantTool.make({
+    type: "tool",
+    id: callID,
+    name,
+    state: SessionMessage.ToolStateCompleted.make({
+      status: "completed",
+      input,
+      content: [{ type: "text", text: output }],
+    }),
+    time: { created },
+  })
+
+const finished = (content: SessionMessage.AssistantContent[]) =>
+  SessionMessage.Assistant.make({
+    id: nextID(),
+    type: "assistant",
+    agent: Agent.defaultID,
+    model,
+    content,
+    time: { created, completed: created },
+  })
+
 const index = (db: Db) =>
   Effect.gen(function* () {
     yield* SessionSearchIndex.ensure(db)
@@ -195,6 +230,116 @@ describe("Session.list search", () => {
 
       expect(ids(result)).toEqual(["ses_parts"])
       expect(result.experimental).toBeUndefined()
+    }),
+  )
+
+  it.effect("matches a partially typed word literally, without stemming", () =>
+    Effect.gen(function* () {
+      const db = yield* setup
+      yield* enable(true)
+      yield* addSession(db, "ses_log", { updated: 10 })
+      yield* addUser(db, "ses_log", "logging the migration")
+      yield* index(db)
+      const session = yield* Session.Service
+
+      // A porter index stores `logging` as `log`, so the typed prefix `loggi` matched nothing.
+      expect(ids(yield* session.list({ search: "loggi" }))).toEqual(["ses_log"])
+      expect(ids(yield* session.list({ search: "the migr" }))).toEqual(["ses_log"])
+      expect(ids(yield* session.list({ search: "Logging" }))).toEqual(["ses_log"])
+      // Literal words: a different form of the word is no longer the same term.
+      expect(ids(yield* session.list({ search: "logged " }))).toEqual([])
+      expect(ids(yield* session.list({ search: "migrate" }))).toEqual([])
+    }),
+  )
+
+  it.effect("matches bounded audit metadata: tool inputs, attachments, shell commands and synthetic notes", () =>
+    Effect.gen(function* () {
+      const db = yield* setup
+      yield* enable(true)
+      yield* Effect.forEach(["ses_inline", "ses_part", "ses_attach", "ses_shell", "ses_synth", "ses_notice"], (id, n) =>
+        addSession(db, id, { updated: 10 + n }),
+      )
+      // A command present only in an inline tool call's input; its output is not indexed.
+      yield* addMessage(
+        db,
+        "ses_inline",
+        finished([toolCall("call_1", "bash", { command: "kubectl rollout restart" }, "inlineoutputonly")]),
+      )
+      // A file name present only in a tool call stored as a session_part row.
+      const part = finished([])
+      yield* addMessage(db, "ses_part", part)
+      yield* db
+        .insert(SessionPartTable)
+        .values({
+          message_id: part.id,
+          session_id: Session.ID.make("ses_part"),
+          ordinal: 0,
+          type: "tool",
+          call_id: "call_2",
+          time_created: 1,
+          time_updated: 1,
+          data: encodePart(toolCall("call_2", "read", { filePath: "src/quokka-handler.ts" }, "partoutputonly")),
+        })
+        .run()
+      yield* addMessage(
+        db,
+        "ses_attach",
+        SessionMessage.User.make({
+          id: nextID(),
+          type: "user",
+          text: "see attached",
+          files: [{ data: "aGVsbG8=", mime: "application/pdf", source: { type: "inline" }, name: "wombat-report.pdf" }],
+          time: { created },
+        }),
+      )
+      yield* addMessage(
+        db,
+        "ses_shell",
+        SessionMessage.Shell.make({
+          id: nextID(),
+          type: "shell",
+          shellID: Shell.ID.make("sh_1"),
+          command: "terraform plan -out=numbat",
+          status: "exited",
+          output: { output: "shelloutputonly", cursor: 15, size: 15, truncated: false },
+          time: { created },
+        }),
+      )
+      yield* addMessage(
+        db,
+        "ses_synth",
+        SessionMessage.Synthetic.make({
+          id: nextID(),
+          type: "synthetic",
+          text: "<subagent>found the leak</subagent>",
+          description: "Audit the platypus service",
+          metadata: { source: "subagent" },
+          time: { created },
+        }),
+      )
+      yield* addMessage(
+        db,
+        "ses_notice",
+        SessionMessage.Synthetic.make({
+          id: nextID(),
+          type: "synthetic",
+          text: "echidna instructions",
+          metadata: { notice: "instructions" },
+          time: { created },
+        }),
+      )
+      yield* index(db)
+      const session = yield* Session.Service
+      const search = (query: string) => session.list({ search: query }).pipe(Effect.map(ids))
+
+      expect(yield* search("kubectl rollout")).toEqual(["ses_inline"])
+      expect(yield* search("quokka")).toEqual(["ses_part"])
+      expect(yield* search("wombat")).toEqual(["ses_attach"])
+      expect(yield* search("terraform plan")).toEqual(["ses_shell"])
+      expect(yield* search("platypus")).toEqual(["ses_synth"])
+      expect(yield* search("found the leak")).toEqual(["ses_synth"])
+      for (const excluded of ["inlineoutputonly", "partoutputonly", "aGVsbG8", "shelloutputonly", "echidna"])
+        expect(yield* search(excluded)).toEqual([])
     }),
   )
 
