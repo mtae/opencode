@@ -126,6 +126,8 @@ export const dict = {
   "palette.search.placeholder": "Search files, commands, and sessions",
   "palette.search.placeholder.home": "Search commands and sessions",
   "palette.empty": "No results found",
+  "session.search.indexing": "Still indexing sessions, results may be incomplete",
+  "session.search.incomplete": "Sessions are still being indexed, results may be incomplete",
   "palette.group.commands": "Commands",
   "palette.group.files": "Files",
   "palette.group.recentSessions": "Recent sessions",

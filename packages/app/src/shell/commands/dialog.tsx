@@ -4,6 +4,7 @@ import { Button } from "@opencode/ui/button"
 import { Dialog, DialogBody } from "@opencode/ui/dialog"
 import { Keybind } from "@opencode/ui/keybind"
 import { Tooltip } from "@opencode/ui/tooltip"
+import { Button } from "@opencode/ui/button"
 import { SearchHighlight, SearchList, type SearchListRow } from "@opencode/ui/search-list"
 import { createMemo, Match, Show, Switch } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -18,6 +19,7 @@ import type { ServerConnection } from "@/runtime/server/registry"
 import { getRelativeTime } from "@/shell/time"
 import { createCommandPaletteFileEntry, createCommandPaletteModel, type CommandPaletteEntry } from "./palette"
 import { createCommandPaletteSearch, matchesCommandPaletteEntry } from "./search"
+import type { PaletteSource } from "./search-machine"
 import "./dialog.css"
 import "../palette-menu.css"
 
@@ -64,7 +66,7 @@ export function DialogCommandPalette(props: { onOpenFile?: (path: string) => voi
 export function CommandPaletteView(props: {
   placeholder: string
   items: (query: string) => CommandPaletteEntry[]
-  sources: ((query: string, signal: AbortSignal) => Promise<CommandPaletteEntry[]>)[]
+  sources: PaletteSource[]
   highlight: (item: CommandPaletteEntry | undefined) => void
   select: (item: CommandPaletteEntry | undefined) => void
   close: () => void
@@ -107,6 +109,20 @@ export function CommandPaletteView(props: {
               : search.failed()
                 ? language.t("common.requestFailed")
                 : language.t("palette.empty")
+          }
+          footer={
+            search.indexing() ? (
+              <div data-slot="command-palette-indexing" role="status">
+                {language.t(
+                  search.indexing() === "refreshing" ? "session.search.indexing" : "session.search.incomplete",
+                )}
+                <Show when={search.indexing() === "incomplete"}>
+                  <Button variant="ghost" size="small" onClick={search.retry}>
+                    {language.t("common.retry")}
+                  </Button>
+                </Show>
+              </div>
+            ) : undefined
           }
           onActive={props.highlight}
           onSelect={props.select}

@@ -558,6 +558,34 @@ export function createHomeSessionsController(home: HomeController) {
           resolveProject: ctx.projects.forSession,
         })[0]
       },
+      /**
+       * Root, unarchived sessions on the focused server matching `query` by title or indexed content, newest first, in
+       * each directory of the selected project or across the server. `indexing` says the server may find more later.
+       */
+      search: async (query: string, signal: AbortSignal) => {
+        const ctx = home.server.focusedContext()
+
+        if (!ctx) throw new Error("No focused server")
+        const responses = await Promise.all(
+          (projectDirectories() ?? [undefined]).map((directory) =>
+            ctx.sdk.api.session.list(
+              { search: query, parentID: null, archived: false, order: "desc", limit: 50, directory },
+              { signal },
+            ),
+          ),
+        )
+        const sessions = ctx.data.session.apply(responses.flatMap((response) => response.data))
+
+        return {
+          records: buildHomeSessionRecords({
+            sessions: () => sessions,
+            projectDirectories,
+            projects: home.project.list,
+            resolveProject: ctx.projects.forSession,
+          }),
+          indexing: responses.some((response) => !!response.experimental?.indexing),
+        }
+      },
       create: home.project.openNewSession,
       open: (session: SessionInfo, options?: OpenSessionOptions) => {
         const project = homeProjectForSession(session, home.project.list())

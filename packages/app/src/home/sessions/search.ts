@@ -5,6 +5,7 @@ import { useServers } from "@/runtime/server/registry"
 import { displayName } from "@opencode/ui/project-avatar"
 import { sessionLabel } from "@/session/title"
 import { makeEventListener } from "@solid-primitives/event-listener"
+import { looksLikeSessionID } from "@/session/search"
 import { createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js"
 import type { HomeController } from "../model"
 import { homeSessionSearchKey, type HomeSessionRecord, type HomeSessionsController } from "./controller"
@@ -20,12 +21,25 @@ import {
   type HomeSessionSearchEffect,
   type HomeSessionSearchEvent,
 } from "./search-machine"
+import {
+  createHomeServerSearchState,
+  selectHomeServerIndexing,
+  selectHomeServerRecords,
+  selectHomeServerSearching,
+  transitionHomeServerSearch,
+  type HomeServerSearchEffect,
+  type HomeServerSearchEvent,
+} from "./server-search-machine"
 
 type HomeSessionSearchSource = Pick<HomeSessionsController, "data" | "session">
 
 type PendingLookup = { controller: AbortController; timer: ReturnType<typeof setTimeout> }
 
-export function createHomeSessionSearchController(home: HomeController, sessions: HomeSessionSearchSource) {
+export function createHomeSessionSearchController(
+  home: HomeController,
+  sessions: HomeSessionSearchSource,
+  options?: { indexingRetryMs?: readonly number[] },
+) {
   const command = useCommand()
   const language = useLanguage()
   const layout = useLayout()
@@ -37,6 +51,15 @@ export function createHomeSessionSearchController(home: HomeController, sessions
   let input: HTMLInputElement | undefined
   let list: HTMLDivElement | undefined
   const query = createMemo(() => selectSearchQuery(searchState()))
+  // Results belong to the server and project they were found in.
+  const scope = createMemo(() => {
+    const selection = home.selection.value()
+
+    return `${selection.server ?? ""}\0${selection.directory ?? ""}`
+  })
+  const connected = () => home.server.focusedContext()?.sdk.connection.status() === "connected"
+  const [serverState, setServerState] = createSignal(createHomeServerSearchState(options?.indexingRetryMs))
+  const serverRuns = new Map<number, { controller?: AbortController; timer: ReturnType<typeof setTimeout> }>()
   const highlighted = createMemo(() => selectSearchHighlighted(searchState()))
 
   const dispatch = (event: HomeSessionSearchEvent) =>
@@ -47,6 +70,58 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       if (next.state !== previous) setSearchState(next.state)
       next.effects.forEach(run)
     })
+
+  const dispatchServer = (event: HomeServerSearchEvent) =>
+    untrack(() => {
+      const previous = serverState()
+      const next = transitionHomeServerSearch(previous, event)
+
+      if (next.state !== previous) setServerState(next.state)
+      next.effects.forEach(runServer)
+    })
+
+  function runServer(effect: HomeServerSearchEffect) {
+    const attempt = effect.attempt
+
+    if (effect.type === "attempt.cancel") {
+      const current = serverRuns.get(attempt)
+      clearTimeout(current?.timer)
+      current?.controller?.abort()
+      serverRuns.delete(attempt)
+
+      return
+    }
+
+    if (effect.type === "timer.start") {
+      const timer = setTimeout(() => {
+        serverRuns.delete(attempt)
+        dispatchServer({ type: "timer.fired", attempt })
+      }, effect.delayMs)
+      serverRuns.set(attempt, { timer })
+
+      return
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      controller.abort()
+      dispatchServer({ type: "failed", attempt })
+    }, effect.timeoutMs)
+    serverRuns.set(attempt, { controller, timer })
+
+    // The machine also ignores a superseded attempt, for a server that answers after the abort.
+    const settle = (event: HomeServerSearchEvent) => {
+      clearTimeout(timer)
+      serverRuns.delete(attempt)
+
+      if (!controller.signal.aborted) dispatchServer(event)
+    }
+
+    void Promise.try(() => sessions.session.search(effect.query, controller.signal)).then(
+      (result) => settle({ type: "resolved", attempt, records: result.records, indexing: result.indexing }),
+      () => settle({ type: "failed", attempt }),
+    )
+  }
 
   function run(effect: HomeSessionSearchEffect) {
     clearTimeout(lookup?.timer)
@@ -82,10 +157,15 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       .filter((record) => `${sessionLabel(record.session)} ${record.projectName}`.toLowerCase().includes(value))
 
     const exact = selectSearchExact(searchState())
+    const local =
+      !exact || records.some((record) => record.session.id === exact.session.id) ? records : [exact, ...records]
+    // Local matches show at once and keep their place; the server adds sessions matched by content or not loaded here.
+    const shown = new Set(local.map((record) => record.session.id))
+    const found = selectHomeServerRecords(serverState(), query(), scope()).filter(
+      (record) => !shown.has(record.session.id),
+    )
 
-    if (!exact || records.some((record) => record.session.id === exact.session.id)) return records
-
-    return [exact, ...records]
+    return found.length === 0 ? local : [...local, ...found]
   })
 
   const active = createMemo(() => {
@@ -113,11 +193,17 @@ export function createHomeSessionSearchController(home: HomeController, sessions
   })
 
   // An exact match belongs to the server and project it was looked up in.
+  createEffect(() => dispatch({ type: "scope.changed", scope: scope(), connected: connected() }))
+
+  // A session ID is looked up instead. A new query or scope cancels the previous server search.
   createEffect(() => {
-    const selection = home.selection.value()
-    const scope = `${selection.server ?? ""}\0${selection.directory ?? ""}`
-    const connected = home.server.focusedContext()?.sdk.connection.status() === "connected"
-    dispatch({ type: "scope.changed", scope, connected })
+    const value = query()
+    dispatchServer({
+      type: "requested",
+      query: value,
+      scope: scope(),
+      enabled: connected() && !looksLikeSessionID(value),
+    })
   })
 
   onCleanup(
@@ -129,7 +215,10 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       close()
     }),
   )
-  onCleanup(() => dispatch({ type: "disposed" }))
+  onCleanup(() => {
+    dispatch({ type: "disposed" })
+    dispatchServer({ type: "disposed" })
+  })
   onMount(() => {
     if (layout.home.searchFocus.take()) focus()
   })
@@ -177,7 +266,13 @@ export function createHomeSessionSearchController(home: HomeController, sessions
       close,
     },
     result: {
-      loading: () => sessions.data.loading() || selectSearchLookingUp(searchState()),
+      // Rows already found stay visible while the server answers.
+      loading: () =>
+        sessions.data.loading() ||
+        selectSearchLookingUp(searchState()) ||
+        (selectHomeServerSearching(serverState()) && results().length === 0),
+      indexing: () => selectHomeServerIndexing(serverState()),
+      retry: () => dispatchServer({ type: "retry" }),
       list: results,
       active,
       noResultsLabel: () => language.t("home.sessions.search.noResults", { query: query() }),

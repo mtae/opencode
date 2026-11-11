@@ -54,7 +54,7 @@ export function DialogSessionSearch(props: { archived?: boolean }) {
 
     const tag = registry.tag(conn)
 
-    const format = (entries: CommandPaletteEntry[]) =>
+    const format = (entries: readonly CommandPaletteEntry[]) =>
       servers.length < 2 || !tag
         ? entries
         : entries.map((entry) => ({
@@ -65,7 +65,8 @@ export function DialogSessionSearch(props: { archived?: boolean }) {
     return [
       {
         items: (query: string) => format(load.items(query)),
-        search: (query: string, signal: AbortSignal) => load.search(query, signal).then(format),
+        search: (query: string, signal: AbortSignal) =>
+          load.search(query, signal).then((answer) => ({ ...answer, items: format(answer.items) })),
       },
     ]
   })

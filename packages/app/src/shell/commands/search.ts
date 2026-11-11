@@ -3,11 +3,13 @@ import { uniqueCommandPaletteEntries, type CommandPaletteEntry } from "./palette
 import {
   createPaletteSearchState,
   selectPaletteSearchFailed,
+  selectPaletteSearchIndexing,
   selectPaletteSearchLoading,
   selectPaletteSearchSources,
   transitionPaletteSearch,
   type PaletteSearchEffect,
   type PaletteSearchEvent,
+  type PaletteSource,
 } from "./search-machine"
 
 export function matchesCommandPaletteEntry(entry: CommandPaletteEntry, query: string) {
@@ -42,13 +44,17 @@ export function rankCommandPaletteEntries(
 export function createCommandPaletteSearch(props: {
   query: () => string
   items: (query: string) => CommandPaletteEntry[]
-  sources: ((query: string, signal: AbortSignal) => Promise<CommandPaletteEntry[]>)[]
+  sources: PaletteSource[]
   /** Sessions open as tabs, which lead the matching sessions. */
   open?: (entry: CommandPaletteEntry) => boolean
+  /** Delays between asks while a server is still indexing; the shared session search policy by default. */
+  indexingRetryMs?: readonly number[]
 }) {
   const query = createMemo(() => props.query().trim())
   const local = createMemo(() => props.items(query()))
-  const [searchState, setSearchState] = createSignal(createPaletteSearchState(props.sources.length))
+  const [searchState, setSearchState] = createSignal(
+    createPaletteSearchState(props.sources.length, props.indexingRetryMs),
+  )
   const inflight = new Map<number, { controller: AbortController; timer: ReturnType<typeof setTimeout> }>()
 
   const dispatch = (event: PaletteSearchEvent) =>
@@ -74,6 +80,15 @@ export function createCommandPaletteSearch(props: {
     const index = effect.index
     const controller = new AbortController()
 
+    if (effect.type === "source.wait") {
+      inflight.set(attempt, {
+        controller,
+        timer: setTimeout(() => dispatch({ type: "source.refresh", index, attempt }), effect.delayMs),
+      })
+
+      return
+    }
+
     inflight.set(attempt, {
       controller,
       timer: setTimeout(() => dispatch({ type: "source.timed-out", index, attempt }), effect.timeoutMs),
@@ -88,7 +103,8 @@ export function createCommandPaletteSearch(props: {
     }
 
     void Promise.try(() => props.sources[index]!(effect.query, controller.signal)).then(
-      (items) => settle({ type: "source.resolved", index, attempt, items }),
+      (answer) =>
+        settle({ type: "source.resolved", index, attempt, ...("items" in answer ? answer : { items: answer }) }),
       () => settle({ type: "source.failed", index, attempt }),
     )
   }
@@ -132,5 +148,7 @@ export function createCommandPaletteSearch(props: {
     items,
     loading: () => selectPaletteSearchLoading(searchState()),
     failed: () => selectPaletteSearchFailed(searchState()),
+    indexing: () => selectPaletteSearchIndexing(searchState()),
+    retry: () => dispatch({ type: "retry.requested" }),
   }
 }
