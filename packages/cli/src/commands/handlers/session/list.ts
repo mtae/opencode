@@ -16,7 +16,8 @@ const handler = Effect.fn("cli.session.list")(function* (
     try: (signal) => client.location.get({ location: { directory: process.cwd() } }, { signal }),
     catch: (cause) => cause,
   })
-  const page = yield* Effect.tryPromise({
+  const search = Option.getOrUndefined(input.search)?.trim()
+  const list = Effect.tryPromise({
     try: (signal) =>
       client.session.list(
         {
@@ -24,11 +25,26 @@ const handler = Effect.fn("cli.session.list")(function* (
           parentID: null,
           order: "desc",
           limit: Option.getOrElse(input.maxCount, () => 100),
+          ...(search ? { search } : {}),
         },
         { signal },
       ),
     catch: (cause) => cause,
   })
+  // While the server is still indexing, the same search may find more sessions. Ask again for a short, bounded time,
+  // then print what there is and say on stderr that it may be incomplete, so stdout stays the plain list.
+  let page = yield* list
+  let waited = 0
+  while (page.experimental?.indexing && waited < SearchIndexingWaitMs) {
+    yield* Effect.sleep(SearchIndexingRetryMs)
+    waited += SearchIndexingRetryMs
+    page = yield* list
+  }
+  if (page.experimental?.indexing)
+    process.stderr.write(
+      `Warning: the session search index is still being built, so results may be incomplete (waited ${waited / 1000}s). Run the search again later.` +
+        EOL,
+    )
   if (input.format === "table" && page.data.length === 0) return
   const output =
     (input.format === "json"
@@ -92,6 +108,10 @@ export default Runtime.handler(Commands.commands.session.commands.list, (input) 
     ),
   ),
 )
+
+/** How long `--search` keeps asking an indexing server, every {@link SearchIndexingRetryMs}, before printing. */
+const SearchIndexingWaitMs = 10_000
+const SearchIndexingRetryMs = 2_000
 
 function formatList(sessions: ReadonlyArray<SessionInfo>) {
   return sessions
