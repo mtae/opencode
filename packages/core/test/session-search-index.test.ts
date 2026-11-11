@@ -414,6 +414,35 @@ describe("SessionSearchIndex", () => {
     }),
   )
 
+  it.effect("skips a malformed attachment without blocking its batch, and keeps valid attachment variants", () =>
+    Effect.gen(function* () {
+      const db = yield* database()
+      yield* addSession(db, sessionA, null)
+      yield* sync(db)
+      const prompt = (files: unknown[]) => JSON.stringify({ text: "attachprompt", files, time: { created: 1_000 } })
+      // One queue batch (drain takes 2) holds the bad attachment and a healthy row.
+      yield* db.run(sql`
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+        VALUES (${id("1")}, ${sessionA}, 'user', 1, 1000, 1000, ${prompt(["bad", 7, null])}),
+          (${id("2")}, ${sessionA}, 'user', 2, 1000, 1000, ${prompt([
+            { data: "", mime: "text/plain", source: { type: "inline" }, name: "inlinenamed.txt" },
+            { data: "", mime: "text/plain", source: { type: "uri", uri: "file:///docs/urionly.md" } },
+            { data: "", mime: "image/png", source: { type: "inline" }, description: "describedshot" },
+          ])})
+      `)
+
+      yield* drain(db)
+      expect(yield* SessionSearchIndex.status(db)).toMatchObject({ pending: 0, documents: 1 })
+      expect(yield* find(db, "inlinenamed urionly describedshot")).toEqual([id("2")])
+      expect(yield* find(db, "bad")).toEqual([])
+
+      yield* setVersion(db, SessionSearchIndex.Version - 1)
+      yield* sync(db)
+      expect(yield* SessionSearchIndex.status(db)).toMatchObject({ backfill: "done", pending: 0, documents: 1 })
+      expect(yield* find(db, "inlinenamed urionly describedshot")).toEqual([id("2")])
+    }),
+  )
+
   it.effect("builds once, and rebuilds when a trigger is missing or the version is older", () =>
     Effect.gen(function* () {
       const db = yield* database()
