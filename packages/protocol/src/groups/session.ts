@@ -119,6 +119,22 @@ export const SessionsQuery = Schema.Struct({
   cursor: Session.ListCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
+export const SessionsResponse = Schema.Struct({
+  data: Schema.Array(PublicSessionInfo),
+  cursor: Schema.Struct({
+    previous: Session.ListCursor.pipe(Schema.optional),
+    next: Session.ListCursor.pipe(Schema.optional),
+  }),
+  experimental: Schema.Struct({
+    indexing: Schema.Literal(true).pipe(Schema.optional),
+  })
+    .pipe(Schema.optional)
+    .annotate({
+      description:
+        "Experimental: may change without compatibility guarantees. With a search, indexing is true while the session search index is still being built or updated, so repeating the same search may return more sessions. Absent otherwise.",
+    }),
+}).annotate({ identifier: "SessionsResponse" })
+
 export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI extends HttpApiMiddleware.AnyId, FormS>(
   sessionLocationMiddleware: Context.Key<I, S>,
   formLocationMiddleware: Context.Key<FormI, FormS>,
@@ -127,13 +143,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
     .add(
       HttpApiEndpoint.get("session.list", "/api/session", {
         query: SessionsQuery,
-        success: Schema.Struct({
-          data: Schema.Array(PublicSessionInfo),
-          cursor: Schema.Struct({
-            previous: Session.ListCursor.pipe(Schema.optional),
-            next: Session.ListCursor.pipe(Schema.optional),
-          }),
-        }).annotate({ identifier: "SessionsResponse" }),
+        success: SessionsResponse,
         error: [InvalidCursorError, InvalidRequestError],
       }).annotateMerge(
         OpenApi.annotations({
