@@ -12,6 +12,7 @@ import { MessageDecodeError } from "./error.js"
 import { SessionMessage } from "./message.js"
 import { Session } from "@opencode/schema/session"
 import { SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionSearchIndex } from "./search-index.js"
 import { fromRow } from "./info.js"
 
 const ListInputBase = {
@@ -53,7 +54,8 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
-  readonly list: (input?: ListInput) => Effect.Effect<Session.Info[]>
+  /** `content` is a {@link SessionSearchIndex.listMatch} expression; with it, `search` also matches indexed content. */
+  readonly list: (input?: ListInput, options?: { readonly content?: string }) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
@@ -151,7 +153,7 @@ const layer = Layer.effect(
         const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
         return row ? fromRow(row) : undefined
       }),
-      list: Effect.fn("SessionStore.list")(function* (input = {}) {
+      list: Effect.fn("SessionStore.list")(function* (input = {}, options = {}) {
         const direction = input.anchor?.direction ?? "next"
         const requestedOrder = input.order ?? "desc"
         const order = direction === "previous" ? (requestedOrder === "asc" ? "desc" : "asc") : requestedOrder
@@ -161,7 +163,15 @@ const layer = Layer.effect(
         if (input.workspaceID) conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
         if ("project" in input) conditions.push(eq(SessionTable.project_id, input.project))
         if ("project" in input && input.subpath !== undefined) conditions.push(eq(SessionTable.path, input.subpath))
-        if (input.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
+        if (input.search) {
+          // Content matches join the same WHERE as the scope and cursor conditions, before the limit; order stays time.
+          const title = like(SessionTable.title, `%${input.search}%`)
+          conditions.push(
+            options.content === undefined
+              ? title
+              : or(title, sql`${SessionTable.id} IN (${SessionSearchIndex.listMatchingSessions(options.content)})`)!,
+          )
+        }
         if (input.parentID !== undefined)
           conditions.push(
             input.parentID === null ? isNull(SessionTable.parent_id) : eq(SessionTable.parent_id, input.parentID),
