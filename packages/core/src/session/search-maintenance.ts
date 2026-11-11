@@ -15,6 +15,8 @@ import { SessionSearchIndex } from "./search-index.js"
 export interface Interface {
   /** Builds and maintains the search index while `experimental.sqlite_fts` is on. Runs until interrupted. */
   readonly run: Effect.Effect<never>
+  /** The index as session list search sees it; undefined while it is off or unsupported, so lists match titles only. */
+  readonly readiness: Effect.Effect<SessionSearchIndex.Readiness | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSearchMaintenance") {}
@@ -191,7 +193,13 @@ export const layer = Layer.effect(
       yield* Effect.sleep(SETTLE)
     })
 
-    return Service.of({ run: Effect.forever(loop).pipe(Effect.ensuring(resign)) })
+    return Service.of({
+      run: Effect.forever(loop).pipe(Effect.ensuring(resign)),
+      readiness: Effect.gen(function* () {
+        if (state.unsupported || !(yield* enabled)) return undefined
+        return yield* SessionSearchIndex.readiness(db)
+      }),
+    })
   }),
 )
 

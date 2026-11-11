@@ -225,6 +225,59 @@ export const search = Effect.fn("SessionSearchIndex.search")(function* (
   )
 }, Effect.orDie)
 
+/**
+ * The FTS5 expression a session list search matches: every word and "quoted phrase" of the typed query must occur in
+ * one title or message, and the last word is a prefix while it is still being typed (no trailing space or closing
+ * quote). An unclosed quote runs to the end. Only word characters reach the expression, each run inside double
+ * quotes, so typed FTS5 syntax is searched as text. Undefined when the query has no word to search.
+ */
+export const listMatch = (query: string) => {
+  const terms = query.split('"').flatMap((segment, index) => {
+    const words = segment.match(Word) ?? []
+    if (index % 2 === 1) return words.length === 0 ? [] : [`"${words.join(" ")}"`]
+    return words.map((word) => `"${word}"`)
+  })
+  if (terms.length === 0) return undefined
+  const typing = /[\p{L}\p{M}\p{N}]$/u.test(query)
+  return [...new Set(terms.map((term, index) => (typing && index === terms.length - 1 ? `${term}*` : term)))].join(
+    " AND ",
+  )
+}
+
+/**
+ * IDs of sessions with an indexed title or message matching a {@link listMatch} expression, for a list's WHERE. It
+ * selects a set, not ranked candidates: the list applies its scope, archived, parent and cursor conditions and its
+ * time order around it, so no relevance cutoff runs before those filters and one session's many hits count once.
+ */
+export const listMatchingSessions = (expression: string) => sql`
+  SELECT document.session_id FROM ${sql.raw(IndexTable)}
+  JOIN ${SessionSearchDocumentTable} AS document ON document.id = ${sql.raw(IndexTable)}.rowid
+  LEFT JOIN ${SessionMessageTable} AS message ON message.id = document.source_id
+  WHERE ${sql.raw(IndexTable)} MATCH ${expression}
+    AND (document.source_id = document.session_id OR message.id IS NOT NULL)
+`
+
+export interface Readiness {
+  /** The index exists at this version, so content can be matched (possibly incompletely). */
+  readonly usable: boolean
+  /** Work remains that can add or change matches: building the index, its historical backfill, or queued changes. */
+  readonly indexing: boolean
+}
+
+/**
+ * How far the index can answer list searches. An empty queue alone does not mean history is indexed, so an unfinished
+ * backfill also counts as indexing. Undefined for an index built by a newer version, which this one cannot read.
+ */
+export const readiness = Effect.fn("SessionSearchIndex.readiness")(function* (db: DatabaseService) {
+  const state = yield* readState(db)
+  if (state && state.version > Version) return undefined
+  const table = yield* db.get(sql`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ${IndexTable}`)
+  if (!current(state) || table === undefined) return { usable: false, indexing: true } satisfies Readiness
+  if (state.backfill !== "done") return { usable: true, indexing: true } satisfies Readiness
+  const queued = yield* db.get(sql`SELECT 1 AS present FROM ${SessionSearchDirtyTable} LIMIT 1`)
+  return { usable: true, indexing: queued !== undefined } satisfies Readiness
+}, Effect.orDie)
+
 const IndexTable = "session_search"
 /** Stored bytes a batch reads at most, beyond its first message. */
 export const MaxBatchBytes = 1024 * 1024

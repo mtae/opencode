@@ -28,6 +28,8 @@ import { Slug } from "./util/slug.js"
 import path from "path"
 import { SessionRunner } from "./session/runner/index.js"
 import { SessionStore } from "./session/store.js"
+import { SessionSearchIndex } from "./session/search-index.js"
+import { SessionSearchMaintenance } from "./session/search-maintenance.js"
 import { SessionExecution } from "./session/execution.js"
 import { SubagentMetadata } from "./session/subagent-metadata.js"
 import {
@@ -130,6 +132,8 @@ export interface Interface {
     {
       readonly data: SessionSchema.Info[]
       readonly cursor: { readonly previous?: ListCursor; readonly next?: ListCursor }
+      /** Present while the search index is still being built or updated, so the same search may match more later. */
+      readonly experimental?: { readonly indexing: true }
     },
     InvalidListCursorError
   >
@@ -282,6 +286,7 @@ const layer = Layer.effect(
     const jobs = yield* Job.Service
     const environments = yield* SessionEnvironment.Service
     const locations = yield* LocationServiceMap.Service
+    const searchIndex = yield* SessionSearchMaintenance.Service
     const sessions = yield* Session.make()
     const mediaBlob = (session: SessionSchema.Info) => SessionBlob.enabledFor(instances, session)
     const isDurableSessionEvent = (item: Bus.LogItem): item is SessionEvent.DurableEvent =>
@@ -422,7 +427,14 @@ const layer = Layer.effect(
           input.cursor === undefined
             ? input
             : yield* ListCursor.parse(input.cursor).pipe(Effect.mapError(() => new InvalidListCursorError()))
-        const data = yield* store.list({ ...filter, limit: input.limit ?? DefaultListLimit })
+        // `search` matches titles, plus indexed content while the index is on. Content only selects sessions; the list
+        // keeps its time order and cursor, so relevance never reorders or cuts a page.
+        const content = filter.search ? SessionSearchIndex.listMatch(filter.search) : undefined
+        const index = content === undefined ? undefined : yield* searchIndex.readiness
+        const data = yield* store.list(
+          { ...filter, limit: input.limit ?? DefaultListLimit },
+          { content: index?.usable ? content : undefined },
+        )
         const first = data[0]
         const last = data.at(-1)
         return {
@@ -441,6 +453,7 @@ const layer = Layer.effect(
                 })
               : undefined,
           },
+          ...(index?.indexing ? { experimental: { indexing: true as const } } : {}),
         }
       }),
       messages: Effect.fn("Session.messages")(function* (input) {
@@ -574,6 +587,7 @@ export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.gl
     SessionMove.node,
     SessionProjector.node,
     LocationServiceMap.node,
+    SessionSearchMaintenance.node,
     FSUtil.node,
     App.node,
   ],
