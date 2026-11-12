@@ -36,6 +36,8 @@ type SessionSearchResult = {
   sessions: SessionInfo[]
   /** The server was still indexing when it answered this search. */
   indexing: boolean
+  /** Where sessions found by their content matched: plain-text excerpts by session ID. */
+  snippets: ReadonlyMap<string, string>
   round: number
   error: unknown
 }
@@ -101,7 +103,7 @@ export function DialogSessionList(props: { indexingRetryMs?: readonly number[] }
                     project: current.project.id,
                     subpath: path.relative(current.project.directory, current.directory).replaceAll("\\", "/"),
                   }),
-            ...(query ? { search: query } : {}),
+            ...(query ? { search: query, match: true } : {}),
             limit: 50,
             order: "desc",
             parentID: null,
@@ -110,13 +112,16 @@ export function DialogSessionList(props: { indexingRetryMs?: readonly number[] }
           { signal: controller.signal },
         )
         const indexing = !!query && !!response.experimental?.indexing
-        return { query, allProjects, sessions: response.data, indexing, round, error: undefined }
+        const snippets = new Map(
+          (response.experimental?.matches ?? []).map((match) => [match.sessionID, match.snippet] as const),
+        )
+        return { query, allProjects, sessions: response.data, indexing, snippets, round, error: undefined }
       } catch (error) {
         // A failed refresh keeps the rows already shown and stops refreshing, as when the budget runs out.
         if (previous && !previous.error) return { ...previous, round: retryDelays.length }
         // A transient transport failure must degrade search, not crash the TUI
         // through the root ErrorBoundary when the errored resource is read.
-        return { query, allProjects, sessions: [] as SessionInfo[], indexing: false, round, error }
+        return { query, allProjects, sessions: [] as SessionInfo[], indexing: false, snippets: new Map(), round, error }
       }
     },
   )
@@ -197,6 +202,9 @@ export function DialogSessionList(props: { indexingRetryMs?: readonly number[] }
 
   const options = createMemo(() => {
     const today = new Date().toDateString()
+    // Excerpts belong to the search that found them; rows kept from an earlier search show none.
+    const query = filter().trim()
+    const snippets = query && searchResults.latest?.query === query ? searchResults.latest.snippets : undefined
     const sessionMap = new Map(
       sessions()
         .filter((session) => !session.parentID)
@@ -225,6 +233,7 @@ export function DialogSessionList(props: { indexingRetryMs?: readonly number[] }
         value: session.id,
         category,
         footer,
+        details: snippets?.has(session.id) ? [snippets.get(session.id) ?? ""] : undefined,
         bg: deleting ? theme.background.action.destructive.focused : undefined,
         fg: deleting ? theme.text.action.destructive.focused : undefined,
         gutter: sessionStatusGutter(

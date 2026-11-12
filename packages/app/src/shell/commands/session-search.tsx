@@ -43,7 +43,10 @@ export function DialogSessionSearch(props: { archived?: boolean }) {
       apply: ctx.data.session.apply,
       projects: ctx.projects.list,
       load: (search, signal) =>
-        ctx.sdk.api.session.list({ parentID: null, search, archived: !!props.archived, limit: 50 }, { signal }),
+        ctx.sdk.api.session.list(
+          { parentID: null, search, archived: !!props.archived, limit: 50, match: true },
+          { signal },
+        ),
       get: (sessionID, signal) => ctx.sdk.api.session.get({ sessionID }, { signal }),
       untitled: () => language.t("command.session.new"),
       category: () => language.t(props.archived ? "sidebar.inbox.archived.title" : "command.category.session"),

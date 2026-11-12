@@ -38,6 +38,36 @@ const session: SessionInfo = {
 }
 
 describe("command palette sessions", () => {
+  test("describes a content-only match by its excerpt and a title match by its project", async () => {
+    const markup = '<img src=x onerror="alert(1)"> the walrus plan'
+    const entries = await new Promise<ReadonlyArray<{ id: string; description?: string }>>((resolve, reject) => {
+      createRoot((dispose) => {
+        const search = createServerSessionEntries({
+          server: ServerConnection.Key.make("selected-server"),
+          projects: () => [project],
+          load: async () => ({
+            data: [session, { ...session, id: "session-body", title: "Untitled chat" }],
+            experimental: { matches: [{ sessionID: "session-body", snippet: markup }] },
+          }),
+          get: async () => session,
+          untitled: () => "Untitled",
+          category: () => "Sessions",
+          recentCategory: () => "Recent sessions",
+        })
+        search("walrus")
+          .then((answer) => resolve(answer.items))
+          .catch(reject)
+          .finally(dispose)
+      })
+    })
+
+    expect(entries.map((entry) => [entry.id, entry.description])).toEqual([
+      ["session:selected-server:session-1", "Palette project"],
+      // Kept as text; the palette renders descriptions as text nodes.
+      ["session:selected-server:session-body", markup],
+    ])
+  })
+
   test("uses the home project avatar and cancels superseded searches", async () => {
     const server = ServerConnection.Key.make("selected-server")
 

@@ -200,7 +200,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
     known: createKnownServerSessions(() => serverCtx),
     projects: serverCtx.projects.list,
     load: (search, signal) =>
-      serverSDK.api.session.list({ parentID: null, search, archived: false, limit: 50 }, { signal }),
+      serverSDK.api.session.list({ parentID: null, search, archived: false, limit: 50, match: true }, { signal }),
     get: (sessionID, signal) => serverSDK.api.session.get({ sessionID }, { signal }),
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
@@ -278,7 +278,14 @@ export function createServerSessionEntries(props: {
   load: (
     search: string,
     signal: AbortSignal,
-  ) => Promise<{ data: SessionInfo[]; experimental?: { indexing?: true | null } | null }>
+  ) => Promise<{
+    data: SessionInfo[]
+    experimental?: {
+      indexing?: true | null
+      /** Where sessions found by their content matched, for servers asked with `match`. */
+      matches?: ReadonlyArray<{ sessionID: string; snippet: string }> | null
+    } | null
+  }>
   get: (sessionID: string, signal: AbortSignal) => Promise<SessionInfo>
   untitled: () => string
   category: () => string
@@ -294,6 +301,7 @@ export function createServerSessionEntries(props: {
       timer: ReturnType<typeof setTimeout>
       controller?: AbortController
       unlink?: () => void
+      snippets?: ReadonlyMap<string, string>
     }
   >()
 
@@ -335,7 +343,12 @@ export function createServerSessionEntries(props: {
       const search = effect.query
       void Promise.all([
         Promise.try(() => props.load(search, controller.signal)).then(
-          (result) => ({ items: result.data, failed: false, indexing: !!result.experimental?.indexing }),
+          (result) => {
+            current.snippets = new Map(
+              (result.experimental?.matches ?? []).map((match) => [match.sessionID, match.snippet] as const),
+            )
+            return { items: result.data, failed: false, indexing: !!result.experimental?.indexing }
+          },
           () => ({ items: [], failed: true, indexing: false }),
         ),
         looksLikeSessionID(search)
@@ -376,7 +389,7 @@ export function createServerSessionEntries(props: {
     // The local collection owns the recent rows, including newly loaded ones.
     if (effect.type === "attempt.resolve")
       return current.result.resolve({
-        items: effect.query ? entries([...effect.sessions], effect.query) : [],
+        items: effect.query ? entries([...effect.sessions], effect.query, current.snippets) : [],
         indexing: effect.indexing,
       })
 
@@ -385,7 +398,11 @@ export function createServerSessionEntries(props: {
 
   onCleanup(() => dispatch({ type: "disposed" }))
 
-  const entries = (sessions: SessionInfo[], search: string): CommandPaletteEntry[] => {
+  const entries = (
+    sessions: SessionInfo[],
+    search: string,
+    snippets?: ReadonlyMap<string, string>,
+  ): CommandPaletteEntry[] => {
     const projects = props.projects()
     const category = search ? props.category() : props.recentCategory()
 
@@ -399,7 +416,9 @@ export function createServerSessionEntries(props: {
           id: `session:${props.server}:${session.id}`,
           type: "session" as const,
           title: session.title || props.untitled(),
-          description: project ? displayName(project) : getFilename(session.location.directory),
+          // A session found by its content shows where it matched (plain text); a title match shows where it lives.
+          description:
+            snippets?.get(session.id) || (project ? displayName(project) : getFilename(session.location.directory)),
           category,
           directory: session.location.directory,
           sessionID: session.id,
