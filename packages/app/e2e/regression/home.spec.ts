@@ -12,7 +12,7 @@ import {
   sessionHref,
   T0,
 } from "../utils/app"
-import { mockOpenCodeServer, mockServers } from "../utils/mock-server"
+import { currentSession, mockOpenCodeServer, mockServers } from "../utils/mock-server"
 import { fixture, mockStressTimeline } from "../utils/session-fixture"
 import { mockRemoteServer, mockWorkspace, newSessionLocation } from "../utils/workspace"
 import { APP_READY_TIMEOUT, expectAppVisible } from "../utils/waits"
@@ -620,3 +620,172 @@ for (const state of [
     ).toBeVisible()
   })
 }
+
+// Home asks the focused server for content matches of an unchanged query and merges them after the local title matches.
+async function routeServerSearch(
+  page: Page,
+  answer: (url: URL, attempt: number) => Promise<{ titles: string[]; indexing?: boolean } | "error" | "hold">,
+  directory: string,
+) {
+  const requests: URL[] = []
+  const held: Array<() => Promise<void>> = []
+  await page.route(
+    (url) => url.pathname === "/api/session" && url.searchParams.has("search"),
+    async (route) => {
+      const url = new URL(route.request().url())
+      requests.push(url)
+      const result = await answer(url, requests.length)
+      if (result === "error")
+        return route.fulfill({ status: 500, json: { _tag: "MockInternal", message: "search failed" } })
+      const fulfill = (value: { titles: string[]; indexing?: boolean }) =>
+        route.fulfill({
+          json: {
+            data: value.titles.map((title) =>
+              currentSession(session({ id: `ses_${title.toLowerCase().replace(/\W+/g, "_")}`, title, directory })),
+            ),
+            cursor: {},
+            ...(value.indexing ? { experimental: { indexing: true } } : {}),
+          },
+        })
+      if (result !== "hold") return fulfill(result)
+      held.push(() => fulfill({ titles: ["Late body match"] }).catch(() => undefined))
+    },
+  )
+  return { requests, held }
+}
+
+test("Home session search fills an unchanged query with server content matches and stops when indexing ends", async ({
+  page,
+}) => {
+  const local = { id: "ses_home_search_local", title: "Quokka notes" }
+  const workspace = await mockWorkspace(page, { name: "HomeServerSearch", sessions: [local] })
+  const server = await routeServerSearch(
+    page,
+    async (_url, attempt) =>
+      attempt === 1
+        ? { titles: [], indexing: true }
+        : attempt === 2
+          ? { titles: ["Body only quokka"], indexing: true }
+          : { titles: ["Body only quokka"] },
+    workspace.directory,
+  )
+  await page.goto("/")
+  const search = page.getByRole("textbox", { name: /Search sessions/ })
+  const panel = page.locator('[data-component="home-session-search-panel"]')
+  const indexing = panel.locator('[data-slot="home-session-search-indexing"]')
+  await expect(row(page, local.title)).toBeVisible()
+
+  await search.click()
+  await page.keyboard.type("quokka")
+  // The local title match shows at once and stays selected while the server answers.
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title)])
+  await expect(indexing).toHaveText("Still indexing sessions, results may be incomplete")
+  // The same query, never retyped, gains the server's body-only match below the local one.
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title), /Body only quokka/])
+  await expect(panel.getByRole("option", { name: local.title })).toHaveAttribute("aria-selected", "true")
+  await expect(indexing).toHaveCount(0)
+  expect(server.requests.map((url) => url.searchParams.get("search"))).toEqual(["quokka", "quokka", "quokka"])
+  expect(server.requests.every((url) => url.searchParams.get("parentID") === "null")).toBe(true)
+  expect(server.requests.every((url) => url.searchParams.get("archived") === "false")).toBe(true)
+
+  await page.keyboard.press("ArrowDown")
+  await expect(panel.getByRole("option", { name: "Body only quokka" })).toHaveAttribute("aria-selected", "true")
+  await expect(search).toHaveValue("quokka")
+  expect(server.requests).toHaveLength(3)
+})
+
+test("Home session search keeps local matches when the server search fails or finds nothing", async ({ page }) => {
+  const local = { id: "ses_home_search_fallback", title: "Quokka fallback" }
+  const workspace = await mockWorkspace(page, { name: "HomeSearchFallback", sessions: [local] })
+  const server = await routeServerSearch(
+    page,
+    async (url) => (url.searchParams.get("search") === "quokka" ? "error" : { titles: [] }),
+    workspace.directory,
+  )
+  await page.goto("/")
+  const search = page.getByRole("textbox", { name: /Search sessions/ })
+  const panel = page.locator('[data-component="home-session-search-panel"]')
+  await expect(row(page, local.title)).toBeVisible()
+
+  await search.click()
+  await page.keyboard.type("quokka")
+  await expect.poll(() => server.requests.length).toBe(1)
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title)])
+  await expect(panel).not.toContainText("search failed")
+
+  await page.keyboard.type(" fallback")
+  await expect.poll(() => server.requests.length).toBe(2)
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title)])
+  await page.keyboard.press("Enter")
+  await expect(page).toHaveURL(new RegExp(local.id))
+})
+
+test("a late server answer for an earlier Home search query never replaces the current results", async ({ page }) => {
+  const workspace = await mockWorkspace(page, {
+    name: "HomeSearchLate",
+    sessions: [{ id: "ses_home_search_late", title: "Zebra local" }],
+  })
+  const server = await routeServerSearch(
+    page,
+    async (url) => (url.searchParams.get("search") === "quokka" ? "hold" : { titles: ["Zebra body match"] }),
+    workspace.directory,
+  )
+  await page.goto("/")
+  const search = page.getByRole("textbox", { name: /Search sessions/ })
+  const panel = page.locator('[data-component="home-session-search-panel"]')
+  await expect(row(page, "Zebra local")).toBeVisible()
+
+  await search.click()
+  await page.keyboard.type("quokka")
+  await expect.poll(() => server.held.length).toBe(1)
+  await search.fill("zebra")
+  await expect(panel.getByRole("option")).toHaveText([/Zebra local/, /Zebra body match/])
+  await Promise.all(server.held.map((release) => release()))
+  await expect(panel.getByRole("option")).toHaveText([/Zebra local/, /Zebra body match/])
+  await expect(page.getByText("Late body match")).toHaveCount(0)
+
+  // Escape clears the query, so nothing from either query shows again.
+  await page.keyboard.press("Escape")
+  await expect(search).toHaveValue("")
+  await expect(panel).toHaveCount(0)
+  await expect(page.getByText("Late body match")).toHaveCount(0)
+})
+
+test("leaving Home session search stops its server refresh, and returning asks again", async ({ page }) => {
+  const local = { id: "ses_home_search_blur", title: "Quokka blur" }
+  const workspace = await mockWorkspace(page, { name: "HomeSearchBlur", sessions: [local] })
+  const server = await routeServerSearch(
+    page,
+    async (_url, attempt) => (attempt === 2 ? "hold" : { titles: ["Body only quokka"], indexing: true }),
+    workspace.directory,
+  )
+  await page.goto("/")
+  const search = page.getByRole("textbox", { name: /Search sessions/ })
+  const panel = page.locator('[data-component="home-session-search-panel"]')
+  await expect(row(page, local.title)).toBeVisible()
+
+  await search.click()
+  await page.keyboard.type("quokka")
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title), /Body only quokka/])
+  await expect.poll(() => server.held.length).toBe(1)
+
+  // Tabbing out hides the results and leaves no filter on Home; the refresh in flight is cancelled with them.
+  const aborted = page.waitForEvent("requestfailed", (request) => new URL(request.url()).searchParams.has("search"))
+  // The request timeout (10 s) would also abort it, so the cancel must come well before that.
+  const left = Date.now()
+  await page.keyboard.press("Tab")
+  await page.keyboard.press("Tab")
+  await expect(panel).toHaveCount(0)
+  await aborted
+  expect(Date.now() - left).toBeLessThan(5_000)
+  await expect(row(page, local.title)).toBeVisible()
+  await expect(search).toHaveValue("quokka")
+
+  // Returning to the kept query asks the server again.
+  const asked = server.requests.length
+  await page.keyboard.press("Shift+Tab")
+  await page.keyboard.press("Shift+Tab")
+  await expect(search).toBeFocused()
+  await expect(panel.getByRole("option")).toHaveText([new RegExp(local.title), /Body only quokka/])
+  await expect.poll(() => server.requests.length).toBeGreaterThan(asked)
+})

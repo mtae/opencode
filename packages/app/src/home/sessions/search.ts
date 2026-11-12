@@ -195,14 +195,15 @@ export function createHomeSessionSearchController(
   // An exact match belongs to the server and project it was looked up in.
   createEffect(() => dispatch({ type: "scope.changed", scope: scope(), connected: connected() }))
 
-  // A session ID is looked up instead. A new query or scope cancels the previous server search.
+  // A session ID is looked up instead. A new query or scope cancels the previous server search, and so does leaving
+  // the search: its results are hidden, so it stops asking; returning to the kept query asks again.
   createEffect(() => {
     const value = query()
     dispatchServer({
       type: "requested",
       query: value,
       scope: scope(),
-      enabled: connected() && !looksLikeSessionID(value),
+      enabled: open() && connected() && !looksLikeSessionID(value),
     })
   })
 
