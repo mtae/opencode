@@ -54,8 +54,14 @@ export type MessagesInput = {
 
 export interface Interface {
   readonly get: (sessionID: Session.ID) => Effect.Effect<Session.Info | undefined>
-  /** `content` is a {@link SessionSearchIndex.listMatch} expression; with it, `search` also matches indexed content. */
-  readonly list: (input?: ListInput, options?: { readonly content?: string }) => Effect.Effect<Session.Info[]>
+  /**
+   * With `content`, `search` also matches indexed content: a {@link SessionSearchIndex.listMatch} expression matched
+   * here, or the session IDs a reader already matched it to.
+   */
+  readonly list: (
+    input?: ListInput,
+    options?: { readonly content?: string | ReadonlyArray<string> },
+  ) => Effect.Effect<Session.Info[]>
   readonly messages: (input: MessagesInput) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   readonly context: (sessionID: Session.ID) => Effect.Effect<SessionMessage.Info[], MessageDecodeError>
   /**
@@ -169,7 +175,12 @@ const layer = Layer.effect(
           conditions.push(
             options.content === undefined
               ? title
-              : or(title, sql`${SessionTable.id} IN (${SessionSearchIndex.listMatchingSessions(options.content)})`)!,
+              : or(
+                  title,
+                  typeof options.content === "string"
+                    ? sql`${SessionTable.id} IN (${SessionSearchIndex.listMatchingSessions(options.content)})`
+                    : sql`${SessionTable.id} IN (SELECT value FROM json_each(${JSON.stringify(options.content)}))`,
+                )!,
           )
         }
         if (input.parentID !== undefined)

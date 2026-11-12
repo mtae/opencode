@@ -615,6 +615,7 @@ export function make(options: ClientOptions) {
               project: input?.["project"],
               subpath: input?.["subpath"],
               cursor: input?.["cursor"],
+              match: input?.["match"],
             },
             successStatus: 200,
             declaredStatuses: [400, 401],

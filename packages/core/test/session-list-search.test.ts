@@ -301,7 +301,13 @@ describe("Session.list search", () => {
           shellID: Shell.ID.make("sh_1"),
           command: "terraform plan -out=numbat",
           status: "exited",
-          output: { output: "shelloutputonly", cursor: 15, size: 15, truncated: false },
+          // Only the start of the output is indexed.
+          output: {
+            output: `shelloutputonly ${"x ".repeat(2048)}shelloutputlate`,
+            cursor: 4_128,
+            size: 4_128,
+            truncated: false,
+          },
           time: { created },
         }),
       )
@@ -336,9 +342,10 @@ describe("Session.list search", () => {
       expect(yield* search("quokka")).toEqual(["ses_part"])
       expect(yield* search("wombat")).toEqual(["ses_attach"])
       expect(yield* search("terraform plan")).toEqual(["ses_shell"])
+      expect(yield* search("shelloutputonly")).toEqual(["ses_shell"])
       expect(yield* search("platypus")).toEqual(["ses_synth"])
       expect(yield* search("found the leak")).toEqual(["ses_synth"])
-      for (const excluded of ["inlineoutputonly", "partoutputonly", "aGVsbG8", "shelloutputonly", "echidna"])
+      for (const excluded of ["inlineoutputonly", "partoutputonly", "aGVsbG8", "shelloutputlate", "echidna"])
         expect(yield* search(excluded)).toEqual([])
     }),
   )
@@ -526,6 +533,87 @@ describe("Session.list search", () => {
 
       // Without a search there is nothing to report.
       expect((yield* session.list()).experimental).toBeUndefined()
+    }),
+  )
+
+  it.effect("hides content after a staged revert boundary until the revert is undone", () =>
+    Effect.gen(function* () {
+      const db = yield* setup
+      yield* enable(true)
+      yield* addSession(db, "ses_staged", { updated: 5 })
+      yield* addUser(db, "ses_staged", "first prompt about a capybara")
+      const boundary = SessionMessage.ID.make(`msg_${String(seq + 1).padStart(4, "0")}`)
+      yield* addUser(db, "ses_staged", "undone prompt about a tapir")
+      yield* addUser(db, "ses_staged", "undone follow-up about a tapir")
+      yield* index(db)
+      const session = yield* Session.Service
+      const search = (query: string) => session.list({ search: query }).pipe(Effect.map(ids))
+
+      yield* db
+        .update(SessionTable)
+        .set({ revert: { messageID: boundary } })
+        .where(eq(SessionTable.id, Session.ID.make("ses_staged")))
+        .run()
+      // The staged messages are hidden from the session, so they no longer explain a match; earlier ones still do.
+      expect(yield* search("tapir")).toEqual([])
+      expect(yield* search("capybara")).toEqual(["ses_staged"])
+      expect((yield* session.list({ search: "capybara", match: true })).experimental?.matches).toMatchObject([
+        { sessionID: "ses_staged", snippet: "first prompt about a capybara" },
+      ])
+
+      yield* db
+        .update(SessionTable)
+        .set({ revert: null })
+        .where(eq(SessionTable.id, Session.ID.make("ses_staged")))
+        .run()
+      expect(yield* search("tapir")).toEqual(["ses_staged"])
+    }),
+  )
+
+  it.effect("with match, says where content-only rows matched without changing the list", () =>
+    Effect.gen(function* () {
+      const db = yield* setup
+      yield* enable(true)
+      // Newer, better-ranked matches in another directory must not crowd out the scoped session's context.
+      yield* Effect.forEach(
+        Array.from({ length: 30 }, (_, n) => n),
+        (n) =>
+          Effect.gen(function* () {
+            yield* addSession(db, `ses_far_${String(n).padStart(2, "0")}`, { directory: other, updated: 100 + n })
+            yield* addUser(db, `ses_far_${String(n).padStart(2, "0")}`, "gecko gecko gecko gecko")
+          }),
+      )
+      // A long session: many weak matches, one strong one in the middle, markup in its text.
+      yield* addSession(db, "ses_long", { updated: 50 })
+      yield* Effect.forEach(Array.from({ length: 60 }), (_, n) =>
+        addUser(db, "ses_long", n === 30 ? 'the <b>gecko</b> "sticky feet" study, gecko gecko' : `note ${n} gecko`),
+      )
+      yield* addSession(db, "ses_title", { title: "Gecko care", updated: 40 })
+      yield* addUser(db, "ses_title", "gecko feeding")
+      yield* addSession(db, "ses_accent", { updated: 30 })
+      yield* addUser(db, "ses_accent", "Le café crème et le Gécko sont arrivés")
+      yield* index(db)
+      const session = yield* Session.Service
+
+      const plain = yield* session.list({ directory: project, search: "gecko" })
+      const matched = yield* session.list({ directory: project, search: "gecko", match: true })
+      expect(ids(matched)).toEqual(ids(plain))
+      expect(ids(matched)).toEqual(["ses_long", "ses_title", "ses_accent"])
+      expect(matched.cursor).toEqual(plain.cursor)
+      expect(plain.experimental).toBeUndefined()
+      const matches = matched.experimental?.matches ?? []
+      // The title already explains its row.
+      expect(matches.map((match): string => match.sessionID)).toEqual(["ses_long", "ses_accent"])
+      expect(matches[0]).toMatchObject({ source: "user", snippet: 'the <b>gecko</b> "sticky feet" study, gecko gecko' })
+      expect(matches[1]?.snippet).toBe("Le café crème et le Gécko sont arrivés")
+
+      // A phrase and a typed prefix pick the same message; diacritics fold.
+      const phrase = yield* session.list({ directory: project, search: '"sticky feet" gec', match: true })
+      expect(phrase.experimental?.matches?.[0]?.snippet).toContain("sticky feet")
+      const accent = yield* session.list({ directory: project, search: "creme", match: true })
+      expect(accent.experimental?.matches).toMatchObject([{ sessionID: "ses_accent" }])
+      // No match option, no context.
+      expect((yield* session.list({ search: "gecko", directory: project })).experimental?.matches).toBeUndefined()
     }),
   )
 })

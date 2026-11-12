@@ -7,9 +7,9 @@ import type { Session } from "@opencode/schema/session"
 import type { AbsolutePath } from "@opencode/schema/schema"
 import type { Project } from "@opencode/schema/project"
 import type { RelativePath } from "@opencode/schema/schema"
+import type { SessionMessage } from "@opencode/schema/session-message"
 import type { Model } from "@opencode/schema/model"
 import type { Permission } from "@opencode/schema/permission"
-import type { SessionMessage } from "@opencode/schema/session-message"
 import type { SessionInbox } from "@opencode/schema/session-inbox"
 import type { PromptInput } from "@opencode/schema/prompt-input"
 import type { AgentAttachment } from "@opencode/schema/prompt"
@@ -140,6 +140,7 @@ export type SessionListInput = {
   readonly project?: Project.ID | undefined
   readonly subpath?: RelativePath | undefined
   readonly cursor?: Session.ListCursor | undefined
+  readonly match?: boolean | undefined
 }
 export type SessionListOutput = {
   readonly data: ReadonlyArray<Session.Info>
@@ -147,7 +148,19 @@ export type SessionListOutput = {
     readonly previous?: Session.ListCursor | undefined
     readonly next?: Session.ListCursor | undefined
   }
-  readonly experimental?: { readonly indexing?: true | undefined } | undefined
+  readonly experimental?:
+    | {
+        readonly indexing?: true | undefined
+        readonly matches?:
+          | ReadonlyArray<{
+              readonly sessionID: Session.ID
+              readonly messageID: SessionMessage.ID
+              readonly source: "user" | "assistant" | "shell" | "synthetic" | "compaction"
+              readonly snippet: string
+            }>
+          | undefined
+      }
+    | undefined
 }
 export type SessionListOperation<E = never> = (input?: SessionListInput) => Effect.Effect<SessionListOutput, E>
 

@@ -127,12 +127,23 @@ export { TurnRangeError }
 
 export interface Interface {
   /** A cursor carries the filters of the request that produced it, so filters passed with a cursor are ignored. */
-  readonly list: (input?: ListFilter & { readonly limit?: number; readonly cursor?: ListCursor }) => Effect.Effect<
+  readonly list: (
+    input?: ListFilter & {
+      readonly limit?: number
+      readonly cursor?: ListCursor
+      /** With a search, also say where listed sessions found by content alone matched. */
+      readonly match?: boolean
+    },
+  ) => Effect.Effect<
     {
       readonly data: SessionSchema.Info[]
       readonly cursor: { readonly previous?: ListCursor; readonly next?: ListCursor }
-      /** Present while the search index is still being built or updated, so the same search may match more later. */
-      readonly experimental?: { readonly indexing: true }
+      readonly experimental?: {
+        /** Present while the search index is still being built or updated, so the same search may match more later. */
+        readonly indexing?: true
+        /** With `match`, where listed sessions matched; see {@link SessionSearchIndex.matches}. */
+        readonly matches?: ReadonlyArray<SessionSearchIndex.Match>
+      }
     },
     InvalidListCursorError
   >
@@ -428,10 +439,30 @@ const layer = Layer.effect(
         // keeps its time order and cursor, so relevance never reorders or cuts a page.
         const content = filter.search ? SessionSearchIndex.listMatch(filter.search) : undefined
         const index = content === undefined ? undefined : yield* searchIndex.readiness
+        // The content set is read off the server's thread when a reader can run, so a common word or short prefix
+        // never stalls other requests; otherwise it is matched inline.
+        const matched = content !== undefined && index?.usable ? yield* searchIndex.sessions(content) : undefined
         const data = yield* store.list(
           { ...filter, limit: input.limit ?? DefaultListLimit },
-          { content: index?.usable ? content : undefined },
+          { content: index?.usable ? (matched ?? content) : undefined },
         )
+        // Context only for rows the title does not already explain, read after the page is chosen so it never changes
+        // which sessions are listed or their order.
+        const search = filter.search ?? ""
+        const matches =
+          input.match && content !== undefined && index?.usable
+            ? yield* searchIndex.matches({
+                expression: content,
+                query: search,
+                sessionIDs: data
+                  .filter((session) => !(session.title ?? "").toLowerCase().includes(search.toLowerCase()))
+                  .map((session) => session.id),
+              })
+            : []
+        const experimental = {
+          ...(index?.indexing ? { indexing: true as const } : {}),
+          ...(matches.length > 0 ? { matches } : {}),
+        }
         const first = data[0]
         const last = data.at(-1)
         return {
@@ -450,7 +481,7 @@ const layer = Layer.effect(
                 })
               : undefined,
           },
-          ...(index?.indexing ? { experimental: { indexing: true as const } } : {}),
+          ...(Object.keys(experimental).length > 0 ? { experimental } : {}),
         }
       }),
       messages: Effect.fn("Session.messages")(function* (input) {

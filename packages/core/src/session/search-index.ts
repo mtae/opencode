@@ -29,9 +29,10 @@ type DatabaseService = Database.Interface["db"]
 /**
  * Bump when the columns, tokenizer, triggers or extracted text change, so {@link ensure} rebuilds. 2: literal
  * `unicode61` tokens instead of porter stems (a stemmed index cannot match a partially typed word), and bounded tool
- * calls, shell commands, attachment names and synthetic notes in the extracted text.
+ * calls, shell commands, attachment names and synthetic notes in the extracted text. 3: the first
+ * {@link SessionSearchText.MaxShellOutput} characters of shell output.
  */
-export const Version = 2
+export const Version = 3
 
 export type Layout = "compact" | "text"
 
@@ -261,8 +262,96 @@ export const listMatchingSessions = (expression: string) => sql`
   JOIN ${SessionSearchDocumentTable} AS document ON document.id = ${sql.raw(IndexTable)}.rowid
   LEFT JOIN ${SessionMessageTable} AS message ON message.id = document.source_id
   WHERE ${sql.raw(IndexTable)} MATCH ${expression}
-    AND (document.source_id = document.session_id OR message.id IS NOT NULL)
+    AND (document.source_id = document.session_id OR (message.id IS NOT NULL AND ${visible}))
 `
+
+/**
+ * Whether a matched message is visible. A staged revert hides its boundary message and later ones until it is undone
+ * or committed (which deletes them), so they do not match meanwhile. Few sessions have one: the document's session is
+ * checked against that small set first, so other rows never read the message row (measured: the plain join to the
+ * boundary doubled a common word's match, this adds about a tenth).
+ */
+const visible = sql`(
+    document.session_id NOT IN (SELECT id FROM ${SessionTable} WHERE revert IS NOT NULL)
+    OR message.seq < coalesce((
+      SELECT boundary.seq FROM ${SessionTable} AS session
+      JOIN ${SessionMessageTable} AS boundary
+        ON boundary.id = CASE WHEN json_valid(session.revert) THEN session.revert ->> '$.messageID' END
+      WHERE session.id = document.session_id
+    ), message.seq + 1)
+  )`
+
+/** The indexed message types. */
+export type MatchSource = "user" | "assistant" | "shell" | "synthetic" | "compaction"
+const isMatchSource = (type: SessionMessage.Info["type"]): type is MatchSource =>
+  type === "user" || type === "assistant" || type === "shell" || type === "synthetic" || type === "compaction"
+
+/** Where a listed session matched: one message and a plain-text excerpt of it. */
+export interface Match {
+  readonly sessionID: SessionSchema.ID
+  readonly messageID: SessionMessage.ID
+  readonly source: MatchSource
+  readonly snippet: string
+}
+
+/** Sessions a response explains at most; each excerpt re-reads one bounded message. */
+export const MaxMatches = 20
+
+/**
+ * Where each of `sessionIDs` matched a {@link listMatch} expression: its best BM25 message, re-read through the same
+ * bounded extraction as indexing (no tool output, reasoning or file data), and an excerpt of it. The best entry is
+ * chosen among these sessions only, so better matches elsewhere never crowd one out. A session that matched by its
+ * title alone has no entry. At most {@link MaxMatches} sessions, in the given order.
+ */
+export const matches = Effect.fn("SessionSearchIndex.matches")(function* (
+  db: DatabaseService,
+  input: { readonly expression: string; readonly query: string; readonly sessionIDs: ReadonlyArray<SessionSchema.ID> },
+) {
+  const sessionIDs = input.sessionIDs.slice(0, MaxMatches)
+  if (sessionIDs.length === 0) return []
+  // SQLite keeps each session's best entry, so at most one row per session reaches JavaScript however many of a long
+  // session's messages match.
+  const rows = yield* db.all<{ sessionID: SessionSchema.ID; sourceID: string }>(sql`
+    SELECT sessionID, sourceID FROM (
+      SELECT document.session_id AS sessionID, document.source_id AS sourceID,
+        row_number() OVER (PARTITION BY document.session_id ORDER BY ${sql.raw(Rank)}) AS position
+      FROM ${sql.raw(IndexTable)}
+      JOIN ${SessionSearchDocumentTable} AS document ON document.id = ${sql.raw(IndexTable)}.rowid
+      JOIN ${SessionMessageTable} AS message ON message.id = document.source_id
+      WHERE ${sql.raw(IndexTable)} MATCH ${input.expression}
+        AND document.session_id IN (SELECT value FROM json_each(${JSON.stringify(sessionIDs)}))
+        AND ${visible}
+    ) WHERE position = 1
+  `)
+  const best = new Map(rows.map((row) => [row.sessionID, row.sourceID]))
+  if (best.size === 0) return []
+  const documents = new Map(
+    (yield* messageSources(
+      db,
+      sql`message.id IN (SELECT value FROM json_each(${JSON.stringify([...best.values()])}))`,
+    )).map((document) => [document.sourceID, document]),
+  )
+  return sessionIDs.flatMap((sessionID): Match[] => {
+    const sourceID = best.get(sessionID)
+    const message = sourceID === undefined ? undefined : documents.get(sourceID)?.message
+    if (!message || !isMatchSource(message.type)) return []
+    const fields = SessionSearchText.readable(message)
+    if (!fields) return []
+    const snippet = SessionSearchText.snippet([fields.user_text, fields.assistant_text, fields.summary], input.query)
+    return [{ sessionID, messageID: message.id, source: message.type, snippet }]
+  })
+}, Effect.orDie)
+
+/** The distinct sessions a {@link listMatchingSessions} set holds, read as a list for a read-only worker to return. */
+export const matchingSessions = Effect.fn("SessionSearchIndex.matchingSessions")(function* (
+  db: DatabaseService,
+  expression: string,
+) {
+  const rows = yield* db.all<{ id: string }>(
+    sql`SELECT DISTINCT session_id AS id FROM (${listMatchingSessions(expression)})`,
+  )
+  return rows.map((row) => row.id)
+}, Effect.orDie)
 
 export interface Readiness {
   /** The index exists at this version, so content can be matched (possibly incompletely). */
@@ -422,6 +511,8 @@ interface Document {
   readonly sourceID: string
   readonly sessionID: SessionSchema.ID
   readonly columns?: Columns
+  /** The reduced message the columns were read from. */
+  readonly message?: SessionMessage.Info
   /** A streaming assistant: its entry is left as it was. */
   readonly unfinished?: true
   readonly malformed?: true
@@ -444,6 +535,7 @@ const decodeMessage = Schema.decodeUnknownOption(Schema.fromJsonString(SessionMe
 
 const MaxText = sql.raw(String(SessionSearchText.MaxText))
 const MaxCall = sql.raw(String(SessionSearchText.MaxCall))
+const MaxShellOutput = sql.raw(String(SessionSearchText.MaxShellOutput))
 
 /**
  * The tool call at `path` of `data`, reduced to its name and its input's string values (each, and together, cut to
@@ -459,7 +551,7 @@ const toolCall = (data: SQL, path: SQL) => sql`json_object(
 
 /**
  * Indexable messages matching `where`, reduced in SQLite to their searchable fields (text cut to MaxText, tool calls
- * and attachment names to MaxCall) so tool output, shell output, attachment data and reasoning never reach JS. An assistant is finished once `time.completed` is set. SQLite's JSON
+ * and attachment names to MaxCall, shell output to MaxShellOutput) so tool output, attachment data and reasoning never reach JS. An assistant is finished once `time.completed` is set. SQLite's JSON
  * functions raise on invalid JSON and would fail the whole batch, so `state` checks the row first (CASE evaluates in
  * order) and elements are read by path from the row rather than parsed one by one. `json_patch` drops nulls so absent
  * fields decode as missing.
@@ -510,6 +602,10 @@ const messageSources = (db: DatabaseService, where: SQL, suffix: SQL = sql``) =>
         'metadata', CASE WHEN message.type = 'synthetic' THEN json_object('notice', json(message.data -> '$.metadata.notice')) END,
         'shellID', CASE WHEN message.type = 'shell' THEN message.data ->> '$.shellID' END,
         'command', CASE WHEN message.type = 'shell' THEN substr(message.data ->> '$.command', 1, ${MaxText}) END,
+        'output', CASE WHEN message.type = 'shell' AND json_type(message.data, '$.output') = 'object' THEN json_object(
+          'output', substr(message.data ->> '$.output.output', 1, ${MaxShellOutput}),
+          'cursor', 0, 'size', 0, 'truncated', json('false')
+        ) END,
         'status', CASE WHEN message.type IN ('compaction', 'shell') THEN message.data ->> '$.status' END,
         'reason', CASE WHEN message.type = 'compaction' THEN message.data ->> '$.reason' END,
         'summary', CASE WHEN message.type = 'compaction' THEN substr(message.data ->> '$.summary', 1, ${MaxText}) END,
@@ -548,7 +644,7 @@ const messageSources = (db: DatabaseService, where: SQL, suffix: SQL = sql``) =>
           const message = row.message === null ? Option.none() : decodeMessage(row.message)
           if (Option.isNone(message)) return { ...document, malformed: true }
           const fields = SessionSearchText.fromMessage(message.value)
-          return { ...document, columns: fields ? { title: "", ...fields } : undefined }
+          return { ...document, message: message.value, columns: fields ? { title: "", ...fields } : undefined }
         }),
       ),
     )

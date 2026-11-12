@@ -117,7 +117,20 @@ export const SessionsQuery = Schema.Struct({
   }),
   ...Session.ListFilter.fields,
   cursor: Session.ListCursor.pipe(Schema.optional),
+  match: BooleanFromString.pipe(Schema.optional).annotate({
+    description:
+      "Experimental: with a search, true also returns experimental.matches, where listed sessions found by their content matched. It does not change which sessions are listed or their order.",
+  }),
 }).annotate({ identifier: "SessionsQuery" })
+
+export const SessionSearchMatch = Schema.Struct({
+  sessionID: Session.ID,
+  messageID: SessionMessage.ID,
+  source: Schema.Literals(["user", "assistant", "shell", "synthetic", "compaction"]),
+  snippet: Schema.String.annotate({
+    description: "Plain text around the matched words, at most 160 characters, with … where it was cut. Not markup.",
+  }),
+}).annotate({ identifier: "SessionSearchMatch" })
 
 export const SessionsResponse = Schema.Struct({
   data: Schema.Array(PublicSessionInfo),
@@ -127,11 +140,12 @@ export const SessionsResponse = Schema.Struct({
   }),
   experimental: Schema.Struct({
     indexing: Schema.Literal(true).pipe(Schema.optional),
+    matches: Schema.Array(SessionSearchMatch).pipe(Schema.optional),
   })
     .pipe(Schema.optional)
     .annotate({
       description:
-        "Experimental: may change without compatibility guarantees. With a search, indexing is true while the session search index is still being built or updated, so repeating the same search may return more sessions. Absent otherwise.",
+        "Experimental: may change without compatibility guarantees. With a search, indexing is true while the session search index is still being built or updated, so repeating the same search may return more sessions. With match=true, matches holds where up to 20 listed sessions whose title does not contain the search matched by content. Absent otherwise.",
     }),
 }).annotate({ identifier: "SessionsResponse" })
 

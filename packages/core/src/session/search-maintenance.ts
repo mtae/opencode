@@ -11,12 +11,22 @@ import { Config } from "../config.js"
 import { LocationServiceMap } from "../location-service-map.js"
 import { SessionEvent } from "./event.js"
 import { SessionSearchIndex } from "./search-index.js"
+import { SessionSearchReader } from "./search-reader.js"
 
 export interface Interface {
   /** Builds and maintains the search index while `experimental.sqlite_fts` is on. Runs until interrupted. */
   readonly run: Effect.Effect<never>
   /** The index as session list search sees it; undefined while it is off or unsupported, so lists match titles only. */
   readonly readiness: Effect.Effect<SessionSearchIndex.Readiness | undefined>
+  /**
+   * Sessions matching a list search expression, read off the server's thread, or undefined when no reader can run (an
+   * in-memory database, a bundle without the worker): the list then matches inline.
+   */
+  readonly sessions: (expression: string) => Effect.Effect<ReadonlyArray<string> | undefined>
+  /** Where listed sessions matched a usable index; see {@link SessionSearchIndex.matches}. */
+  readonly matches: (
+    input: Parameters<typeof SessionSearchIndex.matches>[1],
+  ) => Effect.Effect<ReadonlyArray<SessionSearchIndex.Match>>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSearchMaintenance") {}
@@ -48,6 +58,34 @@ export const layer = Layer.effect(
     const scope = yield* Scope.Scope
     const doorbell = yield* Latch.make()
     const owner = randomUUID()
+    // Reads off the server's thread, or undefined when no reader can run (an in-memory database, a bundle without the
+    // worker); callers then read inline.
+    const offThread = <A>(
+      use: (read: SessionSearchReader.Reader) => Effect.Effect<A, SessionSearchReader.UnavailableError>,
+    ) =>
+      Effect.gen(function* () {
+        if (reader.unavailable) return undefined
+        reader.read ??= yield* db
+          .get<{ file: string }>(sql`SELECT file FROM pragma_database_list WHERE name = 'main'`)
+          .pipe(
+            Effect.orDie,
+            Effect.map((row) => (row?.file ? SessionSearchReader.make(SessionSearchReader.spawn(row.file)) : null)),
+          )
+        if (reader.read === null) return undefined
+        return yield* use(reader.read).pipe(
+          Effect.catchTag("SessionSearchReader.UnavailableError", (error) => {
+            reader.unavailable = true
+            return Effect.logWarning("session search reader unavailable, reading on the server thread", {
+              cause: error.cause,
+            }).pipe(Effect.as(undefined))
+          }),
+        )
+      })
+    const reader = {
+      unavailable: false,
+      read: undefined as SessionSearchReader.Reader | null | undefined,
+    }
+    yield* Effect.addFinalizer(() => reader.read?.close ?? Effect.void)
     const state = {
       unsupported: false,
       backfilled: false,
@@ -199,6 +237,11 @@ export const layer = Layer.effect(
         if (state.unsupported || !(yield* enabled)) return undefined
         return yield* SessionSearchIndex.readiness(db)
       }),
+      sessions: (expression) => offThread((read) => read.sessions(expression)),
+      matches: (input) =>
+        offThread((read) => read.matches(input)).pipe(
+          Effect.flatMap((found) => (found ? Effect.succeed(found) : SessionSearchIndex.matches(db, input))),
+        ),
     })
   }),
 )

@@ -415,6 +415,13 @@ export type SessionForkBoundary =
   | { type: "before"; messageID: SessionMessageID }
   | { type: "through"; messageID: SessionMessageID }
 
+export type SessionSearchMatch = {
+  sessionID: SessionID
+  messageID: SessionMessageID
+  source: "user" | "assistant" | "shell" | "synthetic" | "compaction"
+  snippet: string
+}
+
 export type SessionMessageAgentSelected = {
   id: SessionMessageID
   metadata?: { [x: string]: JsonValue }
@@ -2722,7 +2729,7 @@ export type AgentInfo = {
 export type SessionsResponse = {
   data: Array<SessionInfo>
   cursor: { previous?: SessionsCursor | null; next?: SessionsCursor | null }
-  experimental?: { indexing?: true | null } | null
+  experimental?: { indexing?: true | null; matches?: Array<SessionSearchMatch> | null } | null
 }
 
 export type SessionInboxInfo = SessionInboxUser | SessionInboxSynthetic | SessionInboxCompaction | SessionInboxMove
@@ -3365,6 +3372,7 @@ export type SessionListInput = {
   readonly project?: string | undefined
   readonly subpath?: string | undefined
   readonly cursor?: string | undefined
+  readonly match?: boolean | undefined
 }
 
 export type SessionListOutput = SessionsResponse

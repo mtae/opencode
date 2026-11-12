@@ -74,7 +74,7 @@ describe("SessionSearchText", () => {
     expect(messages.map(SessionSearchText.fromMessage)).toEqual(messages.map(() => undefined))
   })
 
-  test("extracts shell commands, tool calls and synthetic notes, but no outputs", () => {
+  test("extracts shell commands with the start of their output, tool calls and synthetic notes, but no tool output", () => {
     expect(
       SessionSearchText.fromMessage(
         SessionMessage.Shell.make({
@@ -87,7 +87,7 @@ describe("SessionSearchText", () => {
           time: { created },
         }),
       ),
-    ).toEqual({ summary: "", user_text: "git log --oneline", assistant_text: "" })
+    ).toEqual({ summary: "", user_text: "git log --oneline\n\nleakoutput", assistant_text: "" })
     expect(
       SessionSearchText.fromMessage(
         SessionMessage.Assistant.make({
@@ -132,6 +132,29 @@ describe("SessionSearchText", () => {
         }),
       ),
     ).toEqual({ summary: "Find the bug\n\nsubagent found the bug", user_text: "", assistant_text: "" })
+  })
+
+  test("indexes shell output up to MaxShellOutput characters, not the per-call bound", () => {
+    const shell = (output: string) =>
+      SessionSearchText.fromMessage(
+        SessionMessage.Shell.make({
+          id,
+          type: "shell",
+          shellID: Shell.ID.make("sh_1"),
+          command: "make",
+          status: "exited",
+          output: { output, cursor: output.length, size: output.length, truncated: false },
+          time: { created },
+        }),
+      )?.user_text ?? ""
+    const at = (offset: number, word: string) => "x".repeat(offset) + word
+    expect(shell(at(1500, "target1500 "))).toContain("target1500")
+    // A word ending on the last indexed character is whole; one starting at the cap is not indexed.
+    expect(shell(at(SessionSearchText.MaxShellOutput - 9, " target95"))).toContain("target95")
+    expect(shell(at(SessionSearchText.MaxShellOutput, " targetpast"))).not.toContain("targetpast")
+    expect(shell(at(SessionSearchText.MaxShellOutput + 10, ""))).toHaveLength(
+      "make\n\n".length + SessionSearchText.MaxShellOutput,
+    )
   })
 
   test("bounds each call, and calls apart from the text, so they never crowd text out", () => {
@@ -186,4 +209,43 @@ describe("SessionSearchText", () => {
     )
     expect(fields?.user_text).toHaveLength(SessionSearchText.MaxText)
   })
+})
+
+describe("SessionSearchText.snippet", () => {
+  const { snippet, SnippetWidth } = SessionSearchText
+
+  test("is bounded plain text around the window with the most distinct words", () => {
+    const filler = "lorem ipsum dolor sit amet ".repeat(400)
+    const text = `${filler} alpha once here ${filler} alpha and <script>beta</script> together ${filler}`
+    const result = snippet([text], "alpha beta")
+    expect(result.length).toBeLessThanOrEqual(SnippetWidth)
+    expect(result).toContain("alpha and <script>beta</script> together")
+    expect(result.startsWith("…")).toBe(true)
+    expect(result.endsWith("…")).toBe(true)
+    expect(result).not.toMatch(/\s{2}/)
+  })
+
+  test("folds case and diacritics, matches camelCase subwords, a typed prefix and a phrase", () => {
+    expect(snippet(["Le café crème"], "CREME")).toBe("Le café crème")
+    expect(snippet(["x ".repeat(200) + "call decodeMessageRow now"], "message")).toContain("decodeMessageRow")
+    expect(snippet(["y ".repeat(200) + "the migration plan"], "migr")).toContain("migration plan")
+    expect(snippet(["z ".repeat(200) + "sticky feet"], '"sticky feet"')).toContain("sticky feet")
+  })
+
+  test("takes the first text holding a word, else the start of the first", () => {
+    expect(snippet(["", "nothing here", "the gecko"], "gecko")).toBe("the gecko")
+    expect(snippet(["w ".repeat(200), "other"], "absent")).toMatch(/^w w .*…$/)
+    expect(snippet([], "gecko")).toBe("")
+  })
+
+  test("keeps the excerpt within the width for one unbroken word", () => {
+    const result = snippet(["k".repeat(5000) + " target"], "target")
+    expect(result.length).toBeLessThanOrEqual(SnippetWidth)
+    expect(result).toContain("target")
+  })
+})
+
+test("SessionSearchText.snippet keeps a match right after punctuation", () => {
+  const text = "q ".repeat(300) + "(gecko) end"
+  expect(SessionSearchText.snippet([text], "gecko")).toContain("(gecko) end")
 })

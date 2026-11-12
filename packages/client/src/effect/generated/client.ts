@@ -440,6 +440,7 @@ const EndpointSessionList = (raw: RawClient["server.session"]) => (input?: Sessi
         project: input?.["project"],
         subpath: input?.["subpath"],
         cursor: input?.["cursor"],
+        match: input?.["match"],
       },
     }).pipe(Effect.mapError(mapClientError)),
   )
