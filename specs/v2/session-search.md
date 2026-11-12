@@ -75,22 +75,39 @@ The server keeps the index with one maintenance leader per database:
   reports `indexing`.
 
 Clients ask the same query again while `indexing` is `true`, bounded, and say results may be incomplete when they stop
-asking:
+asking. Every client below trims the typed query before sending it. A trailing space therefore never reaches the
+server from these clients, so they cannot select the server's complete-final-word mode: a query ending in a letter or
+digit is always sent as a final-word prefix.
 
-- **CLI** `opencode session list --search <words>`: project scope of the working directory, root sessions, newest
-  first. It asks again every 2 s for up to 10 s, then prints. If the index is still building, it writes a warning to
-  stderr only, so JSON stdout stays the plain list. A failure to connect, authenticate or list exits 1.
-- **Home, command palette, titlebar session search, TUI session list:**
-  - They ask again after 1, 2, 4, 8, 15 and 15 s while open, then show "may be incomplete" with a retry.
-  - Local title matches show at once. Server matches are appended by session ID.
-  - A new query, scope change, close, leaving the search, or disposal cancels the request and the pending refresh.
-  - An answer for an earlier query or scope is never shown.
-  - A failed server search keeps the local rows.
+- **CLI** `opencode session list --search <words>`:
+  - It lists root sessions in the project scope of the working directory, newest first.
+  - It asks again every 2 s for up to 10 s, then prints.
+  - If the index is still building, it writes a warning to stderr only, so JSON stdout stays the plain list.
+  - A failure to connect, authenticate or list exits 1.
+- **Shared by the GUI and TUI clients:**
+  - They ask again after 1, 2, 4, 8, 15 and 15 s, then say results may be incomplete and offer a retry: "Try again"
+    in the GUI, ctrl+g in the TUI.
+  - A new query, scope change, close or disposal cancels the request and the pending refresh.
+- **Home (web and Desktop):**
+  - Local title matches show at once and keep their place, and server matches are appended by session ID.
+  - Server rows show only while they answer the current query and scope.
+  - A failed or empty server answer leaves the local rows.
+  - Leaving the search, so that its results are hidden, also cancels; returning to the kept query asks again.
+- **Command palette and titlebar session search:**
+  - Rows from sessions this client already has narrow at once.
+  - The server source's rows are added, deduplicated by entry, only when its settled answer is for the current query.
+  - A superseded or aborted server search answers with no rows.
+- **TUI session list:**
+  - The server's answer replaces the list instead of being appended to local rows.
+  - While a request loads, the rows from the latest finished answer stay shown, and they may belong to the previous
+    query. A finished answer is used only when it matches the current query and project scope.
+  - On a failed answer the TUI shows its local title matches and an error note.
 
 ## Why This Shape
 
 - One index in the server serves every client (CLI, TUI, web, Desktop, a native client) through the endpoint they
-  already page with. Clients change only to merge server rows and to repeat a query while `indexing` is set.
+  already page with. Clients change only to use server rows, merged or as the list depending on the client, and to repeat a query
+  while `indexing` is set.
 - Content matching needs database triggers, a schema migration and a background maintainer next to the session
   store, so it is a core change. A stock plugin cannot provide it: plugins cannot add list conditions inside the
   store's query or keep an index transactionally in step with session writes.
