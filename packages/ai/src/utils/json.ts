@@ -52,11 +52,20 @@ export const encodeJsonBytes = (value: unknown): Uint8Array<ArrayBuffer> => {
 interface EncodedArray {
   readonly items: readonly unknown[]
   readonly chunks: readonly Uint8Array<ArrayBuffer>[]
+  /** Encoded bytes held, a proxy for the retained snapshot too (the snapshot shares strings with the caller). */
+  readonly size: number
 }
 
-// Room for a few concurrent sessions, each with a message array and a tool array.
-const RECENT_ARRAYS = 8
+/**
+ * What the memo may keep: room for a few concurrent sessions, each with a message array and a tool array,
+ * and a ceiling on the encoded bytes held across all of them. Exposed so tests can shrink them.
+ */
+export const encodeMemoLimits = { arrays: 8, bytes: 64 * 1024 * 1024 }
 const recent: EncodedArray[] = []
+const retainedBytes = () => recent.reduce((total, entry) => total + entry.size, 0)
+
+/** The memo's current retention, for tests. */
+export const encodeMemoStats = () => ({ arrays: recent.length, bytes: retainedBytes() })
 
 const encodeArray = (items: readonly unknown[]) => {
   const base = recent.reduce(
@@ -76,8 +85,10 @@ const encodeArray = (items: readonly unknown[]) => {
     base.entry && index < base.length ? base.entry.items[index] : snapshot(item),
   )
   if (base.entry) recent.splice(recent.indexOf(base.entry), 1)
-  recent.unshift({ items: snapshots, chunks })
-  recent.length = Math.min(recent.length, RECENT_ARRAYS)
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0)
+  // An array larger than the byte budget is never kept; the rest are dropped oldest first.
+  if (size <= encodeMemoLimits.bytes) recent.unshift({ items: snapshots, chunks, size })
+  while (recent.length > encodeMemoLimits.arrays || retainedBytes() > encodeMemoLimits.bytes) recent.pop()
   return chunks.flatMap((chunk, index) => (index === 0 ? [chunk] : [COMMA, chunk]))
 }
 

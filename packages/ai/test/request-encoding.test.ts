@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { ai, type RequestEncoding } from "../src/effect.js"
 import { LLMClient } from "../src/route.js"
-import { encodeJsonBytes } from "../src/utils/json.js"
+import { encodeJsonBytes, encodeMemoLimits, encodeMemoStats } from "../src/utils/json.js"
 import { configure } from "../src/providers/openai.js"
 import { dynamicResponse } from "./lib/http.js"
 import { deltaChunk, finishChunk } from "./lib/openai-chunks.js"
@@ -106,6 +106,36 @@ describe("encodeJsonBytes", () => {
     encodes({ model: "m", messages: [stamp] })
     stamp.at.setTime(1)
     encodes({ model: "m", messages: [stamp] })
+  })
+
+  test("keeps what it retains within its array and byte limits across growing, shrinking and replaced histories", () => {
+    const saved = { ...encodeMemoLimits }
+    Object.assign(encodeMemoLimits, { arrays: 3, bytes: 3000 })
+    try {
+      const message = (id: number, step: number, size: number) => ({
+        role: "user",
+        content: `s${id} step ${step} ’ ` + "x".repeat(size),
+      })
+      const history = (id: number, steps: number, size: number) =>
+        Array.from({ length: steps }, (_, step) => message(id, step, size))
+      const seen: { arrays: number; bytes: number }[] = []
+      const run = (messages: unknown[]) => {
+        encodes({ model: "m", messages })
+        seen.push(encodeMemoStats())
+      }
+      for (let steps = 1; steps <= 12; steps++) run(history(1, steps, 120)) // evolving
+      for (let steps = 12; steps >= 1; steps -= 3) run(history(1, steps, 120)) // shrinking (compaction)
+      for (let id = 2; id < 10; id++) run(history(id, 6, 120)) // replaced by other sessions
+      run(history(11, 4, 5000)) // one array over the byte limit is never kept
+      run(history(1, 5, 120))
+      for (const stats of seen) {
+        expect(stats.arrays).toBeLessThanOrEqual(3)
+        expect(stats.bytes).toBeLessThanOrEqual(3000)
+      }
+      expect(Math.max(...seen.map((stats) => stats.arrays))).toBeGreaterThan(0)
+    } finally {
+      Object.assign(encodeMemoLimits, saved)
+    }
   })
 
   test("stays byte-identical after many sessions evict old history from the memo", () => {
