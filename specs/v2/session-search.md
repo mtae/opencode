@@ -2,7 +2,7 @@
 
 Session search finds sessions by title, and, when the experimental index is enabled, by what was said and run in
 them. It is a filter on the existing session list endpoint. There is no separate search endpoint, ranking, or result
-type.
+type; a client may ask for a plain-text excerpt of where each content-only row matched.
 
 ## Wire Contract
 
@@ -18,6 +18,7 @@ type.
 | `order`     | `asc` or `desc`                                          | First-page order by update time.                                 |
 | `limit`     | positive integer                                         | Page size. Defaults to 50.                                       |
 | `cursor`    | opaque string from `cursor.previous` or `cursor.next`    | Continues the same ordered list, including its search.           |
+| `match`     | the string `true` or `false` (experimental)              | With `search`, also return `experimental.matches`.               |
 
 The response is the ordinary `SessionsResponse`:
 
@@ -27,13 +28,26 @@ The response is the ordinary `SessionsResponse`:
     /* Session.Info */
   ],
   "cursor": { "previous": "...", "next": "..." },
-  "experimental": { "indexing": true }
+  "experimental": {
+    "indexing": true,
+    "matches": [
+      { "sessionID": "ses_...", "messageID": "msg_...", "source": "assistant", "snippet": "…the walrus plan…" }
+    ]
+  }
 }
 ```
 
-`experimental` is optional. It appears only for a request with `search`, while the index is enabled and still being
-built or has queued changes. It may change without compatibility guarantees. Older clients ignore it. Clients
-generated before it existed decode the response unchanged.
+`experimental` is optional and appears only for a request with `search`. It may change without compatibility
+guarantees. Older clients ignore it, and clients generated before it existed decode the response unchanged.
+
+- `indexing` is `true` while the index is enabled and still being built or has queued changes.
+- `matches` appears only for `match=true` and only when non-empty. It explains up to 20 rows of this page whose title
+  does not contain the search, in page order: for each, its best message by BM25 among those sessions only (so better
+  matches elsewhere never displace it), the message's `source` (`user`, `assistant`, `shell`, `synthetic` or
+  `compaction`), and `snippet`. The snippet is plain text of at most 160 characters with `…` where it was cut, taken
+  from the window with the most distinct query words; it is never markup and clients render it as text. It is read
+  from the same bounded extraction as indexing, without camelCase expansion. `match` never changes rows, order or
+  cursors.
 
 ## What Matches
 
@@ -42,7 +56,9 @@ generated before it existed decode the response unchanged.
   exists at the current version. The index covers the whole database, so one enabling location turns content
   matching on for every scope. It is off by default.
 - A session matches if its title matches **or** any indexed message matches. Matching selects sessions. The list keeps
-  its time order, scope, `parentID`, `archived` and cursor. There is no relevance order, snippet, or highlight.
+  its time order, scope, `parentID`, `archived` and cursor. There is no relevance order or highlight.
+- Messages hidden by a staged revert (the boundary message and later ones) do not match until the revert is undone;
+  committing it deletes them.
 
 Content queries are literal:
 
@@ -54,7 +70,7 @@ Content queries are literal:
 Indexed text, per message:
 
 - user text, plus attachment names or URIs and descriptions; file contents are not indexed;
-- shell commands, but not their output;
+- shell commands, then the first 4,096 characters of their output;
 - assistant text parts, plus tool-call names and input strings, including assistant parts stored as part rows;
 - completed compaction summaries and synthetic notes, except repeated runtime notices.
 
@@ -71,6 +87,9 @@ The server keeps the index with one maintenance leader per database:
 - While the index does not exist yet, only titles match and `indexing` is `true`.
 - Once it exists but the backfill or the queue is unfinished, content matches are possibly incomplete and `indexing`
   is `true`.
+- Content matching for the list and for `matches` runs in a read-only worker thread on the same database file and
+  index, one read at a time, so a common word or short prefix does not stall other requests. Cancelling a request
+  terminates the worker. An in-memory database, or a server that cannot start the worker, reads on the server thread.
 - SQLite without the needed FTS5 support reports the index as unsupported. Search then stays title-only and never
   reports `indexing`.
 
@@ -97,11 +116,14 @@ digit is always sent as a final-word prefix.
   - Rows from sessions this client already has narrow at once.
   - The server source's rows are added, deduplicated by entry, only when its settled answer is for the current query.
   - A superseded or aborted server search answers with no rows.
+  - They ask with `match=true`; a content-only row's description is its excerpt, a title match keeps its project.
+    The composer's session picker does not ask for excerpts.
 - **TUI session list:**
   - The server's answer replaces the list instead of being appended to local rows.
   - While a request loads, the rows from the latest finished answer stay shown, and they may belong to the previous
     query. A finished answer is used only when it matches the current query and project scope.
   - On a failed answer the TUI shows its local title matches and an error note.
+  - It asks with `match=true` and shows a content-only row's excerpt as a detail line under it.
 
 ## Why This Shape
 
@@ -113,5 +135,5 @@ digit is always sent as a final-word prefix.
   store's query or keep an index transactionally in step with session writes.
 
 The index, migration, triggers, backfill and maintenance come from the open upstream PR #62769, which is not merged.
-This contract adds content matching in the list, the readiness flag, literal prefix tokens, bounded audit text, and
-the client behavior above.
+This contract adds content matching in the list, the readiness flag, literal prefix tokens, bounded audit text, the
+off-thread reader, staged-revert hiding, bounded shell output, opt-in excerpts, and the client behavior above.
