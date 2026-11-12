@@ -70,10 +70,27 @@ const encodeArray = (items: readonly unknown[]) => {
     if (base.entry && index < base.length) return base.entry.chunks[index]
     return omitted(item) ? NULL : bytes(encodeJson(item))
   })
+  // Keep a private copy of what was encoded. A caller that mutates a message in place after this step
+  // must not make the next step compare equal to the mutated object and reuse the old bytes.
+  const snapshots = items.map((item, index) =>
+    base.entry && index < base.length ? base.entry.items[index] : snapshot(item),
+  )
   if (base.entry) recent.splice(recent.indexOf(base.entry), 1)
-  recent.unshift({ items, chunks })
+  recent.unshift({ items: snapshots, chunks })
   recent.length = Math.min(recent.length, RECENT_ARRAYS)
   return chunks.flatMap((chunk, index) => (index === 0 ? [chunk] : [COMMA, chunk]))
+}
+
+// A copy of the plain objects, arrays and primitives `sameJson` compares. Anything else (a `Date`, a class
+// with `toJSON`) becomes an instance of this class, which `sameJson` never treats as equal, so that
+// element is always encoded fresh. A symbol would not work: JSON omits symbols, so a key holding one
+// would be skipped when comparing keys.
+class Unshared {}
+const snapshot = (value: unknown): unknown => {
+  if (typeof value !== "object" || value === null) return value
+  if (Array.isArray(value)) return value.map(snapshot)
+  if (!isPlainObject(value)) return new Unshared()
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item)]))
 }
 
 const sharedPrefix = (items: readonly unknown[], previous: readonly unknown[]) => {

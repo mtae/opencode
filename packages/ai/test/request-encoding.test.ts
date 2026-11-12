@@ -96,6 +96,28 @@ describe("encodeJsonBytes", () => {
     encodes({ toJSON: () => ({ replaced: [1] }) })
   })
 
+  test("does not reuse bytes for a message that was mutated in place after it was encoded", () => {
+    const message = { role: "user", content: "original", parts: [{ text: "a" }] }
+    encodes({ model: "m", messages: [message] })
+    message.content = "mutated in place"
+    message.parts[0].text = "b"
+    encodes({ model: "m", messages: [structuredClone(message)] })
+    const stamp = { role: "user", at: new Date(0) }
+    encodes({ model: "m", messages: [stamp] })
+    stamp.at.setTime(1)
+    encodes({ model: "m", messages: [stamp] })
+  })
+
+  test("stays byte-identical after many sessions evict old history from the memo", () => {
+    const session = (id: number, steps: number) =>
+      Array.from({ length: steps }, (_, step) => ({ role: step % 2 ? "assistant" : "user", content: `s${id} step ${step} ’` }))
+    // More interleaved histories than the memo keeps, each growing one message per round.
+    for (let round = 1; round <= 4; round++)
+      for (let id = 0; id < 20; id++) encodes({ model: "m", messages: session(id, round) })
+    // A history evicted long ago is encoded again from scratch.
+    encodes({ model: "m", messages: session(0, 5) })
+  })
+
   test("reuses earlier steps only where the history is unchanged", () => {
     const history = [
       { role: "user", content: "first ’" },
