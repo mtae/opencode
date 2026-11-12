@@ -1,0 +1,100 @@
+# Session Search
+
+Session search finds sessions by title, and, when the experimental index is enabled, by what was said and run in
+them. It is a filter on the existing session list endpoint. There is no separate search endpoint, ranking, or result
+type.
+
+## Wire Contract
+
+`GET /api/session` (`session.list`) takes `search` alongside the list's other query parameters:
+
+| Parameter   | Encoding                                                 | Meaning                                                          |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
+| `search`    | string                                                   | Words to match. Empty or absent means no search.                 |
+| `parentID`  | session ID, or the string `null`                         | `null` returns only root sessions.                               |
+| `archived`  | the string `true` or `false`                             | Only archived, or only unarchived. Omit for both.                |
+| `directory` | absolute path                                            | Sessions whose location is exactly this directory.               |
+| `project`   | project ID (the parameter is `project`, not `projectID`) | Sessions of the project. `subpath` narrows to one relative path. |
+| `order`     | `asc` or `desc`                                          | First-page order by update time.                                 |
+| `limit`     | positive integer                                         | Page size. Defaults to 50.                                       |
+| `cursor`    | opaque string from `cursor.previous` or `cursor.next`    | Continues the same ordered list, including its search.           |
+
+The response is the ordinary `SessionsResponse`:
+
+```json
+{
+  "data": [
+    /* Session.Info */
+  ],
+  "cursor": { "previous": "...", "next": "..." },
+  "experimental": { "indexing": true }
+}
+```
+
+`experimental` is optional. It appears only for a request with `search`, while the index is enabled and still being
+built or has queued changes. It may change without compatibility guarantees. Older clients ignore it. Clients
+generated before it existed decode the response unchanged.
+
+## What Matches
+
+- **Titles** always match as a case-insensitive substring (`LIKE %search%`), with or without the index.
+- **Content** matches only while `experimental.sqlite_fts` is `true` in any loaded location's config and the index
+  exists at the current version. The index covers the whole database, so one enabling location turns content
+  matching on for every scope. It is off by default.
+- A session matches if its title matches **or** any indexed message matches. Matching selects sessions. The list keeps
+  its time order, scope, `parentID`, `archived` and cursor. There is no relevance order, snippet, or highlight.
+
+Content queries are literal:
+
+- Words are split on letters, marks and digits. They are case- and diacritic-folded, with no stemming.
+- All words must match (`AND`). Text inside double quotes is a phrase.
+- The final word is a prefix only when the query ends in a letter or digit. `alp` finds `alpha`; `alp ` does not.
+- Typed FTS5 syntax is searched as text.
+
+Indexed text, per message:
+
+- user text, plus attachment names or URIs and descriptions; file contents are not indexed;
+- shell commands, but not their output;
+- assistant text parts, plus tool-call names and input strings, including assistant parts stored as part rows;
+- completed compaction summaries and synthetic notes, except repeated runtime notices.
+
+Tool output, reasoning, and streaming assistant parts are not indexed. Each text source is cut to its first 65,536
+characters. Each tool call or attachment is cut to 1,024 characters, and a message's calls and attachments together
+to 16,384 characters.
+
+## Readiness
+
+The server keeps the index with one maintenance leader per database:
+
+- It builds the index, backfills history in small batches after a quiet period, then drains a trigger-fed change
+  queue.
+- While the index does not exist yet, only titles match and `indexing` is `true`.
+- Once it exists but the backfill or the queue is unfinished, content matches are possibly incomplete and `indexing`
+  is `true`.
+- SQLite without the needed FTS5 support reports the index as unsupported. Search then stays title-only and never
+  reports `indexing`.
+
+Clients ask the same query again while `indexing` is `true`, bounded, and say results may be incomplete when they stop
+asking:
+
+- **CLI** `opencode session list --search <words>`: project scope of the working directory, root sessions, newest
+  first. It asks again every 2 s for up to 10 s, then prints. If the index is still building, it writes a warning to
+  stderr only, so JSON stdout stays the plain list. A failure to connect, authenticate or list exits 1.
+- **Home, command palette, titlebar session search, TUI session list:**
+  - They ask again after 1, 2, 4, 8, 15 and 15 s while open, then show "may be incomplete" with a retry.
+  - Local title matches show at once. Server matches are appended by session ID.
+  - A new query, scope change, close, leaving the search, or disposal cancels the request and the pending refresh.
+  - An answer for an earlier query or scope is never shown.
+  - A failed server search keeps the local rows.
+
+## Why This Shape
+
+- One index in the server serves every client (CLI, TUI, web, Desktop, a native client) through the endpoint they
+  already page with. Clients change only to merge server rows and to repeat a query while `indexing` is set.
+- Content matching needs database triggers, a schema migration and a background maintainer next to the session
+  store, so it is a core change. A stock plugin cannot provide it: plugins cannot add list conditions inside the
+  store's query or keep an index transactionally in step with session writes.
+
+The index, migration, triggers, backfill and maintenance come from the open upstream PR #62769, which is not merged.
+This contract adds content matching in the list, the readiness flag, literal prefix tokens, bounded audit text, and
+the client behavior above.
